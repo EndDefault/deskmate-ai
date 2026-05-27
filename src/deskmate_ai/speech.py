@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import pyttsx3
+from deskmate_ai.services.speech_service import speak
 
-
-def speak(text: str) -> None:
-    engine = pyttsx3.init()
-    engine.say(text)
-    engine.runAndWait()
+__all__ = ["speak"]
