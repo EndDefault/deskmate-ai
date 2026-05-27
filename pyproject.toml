@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deskmate-ai"
+version = "0.1.0"
+description = "Desktop AI assistant for document summaries, site launching, and TTS output."
+requires-python = ">=3.11"
+dependencies = [
+    "customtkinter==5.2.2",
+    "pypdf==4.3.1",
+    "pyttsx3==2.90",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.3",
+]
+
+[project.scripts]
+deskmate-ai = "deskmate_ai.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
