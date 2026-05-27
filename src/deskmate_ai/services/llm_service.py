@@ -20,6 +20,11 @@ def ask_local_model(prompt: str, *, config: AppConfig = DEFAULT_CONFIG) -> str |
             {"role": "user", "content": prompt},
         ],
         "stream": False,
+        "keep_alive": config.ollama_keep_alive,
+        "options": {
+            "num_predict": config.ollama_max_tokens,
+            "temperature": 0.4,
+        },
     }
 
     try:
@@ -30,7 +35,7 @@ def ask_local_model(prompt: str, *, config: AppConfig = DEFAULT_CONFIG) -> str |
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with request.urlopen(req, timeout=30) as response:
+        with request.urlopen(req, timeout=config.ollama_timeout_seconds) as response:
             body = json.loads(response.read().decode("utf-8"))
     except (OSError, TimeoutError, error.URLError, json.JSONDecodeError):
         return None
