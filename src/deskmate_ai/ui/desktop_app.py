@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from threading import Thread
 from tkinter import filedialog
 
 import customtkinter as ctk
@@ -17,6 +18,7 @@ class DeskMateApp(ctk.CTk):
 
         self.tts_enabled = ctk.BooleanVar(value=False)
         self.document_path: str | None = None
+        self.is_processing = False
 
         self.chat_log = ctk.CTkTextbox(self, wrap="word")
         self.chat_log.pack(fill="both", expand=True, padx=16, pady=(16, 8))
@@ -24,7 +26,7 @@ class DeskMateApp(ctk.CTk):
         document_bar = ctk.CTkFrame(self)
         document_bar.pack(fill="x", padx=16, pady=(0, 8))
 
-        self.document_label = ctk.CTkLabel(document_bar, text="선택된 문서 없음", anchor="w")
+        self.document_label = ctk.CTkLabel(document_bar, text="선택한 문서 없음", anchor="w")
         self.document_label.pack(side="left", fill="x", expand=True, padx=8, pady=8)
 
         document_button = ctk.CTkButton(
@@ -45,8 +47,13 @@ class DeskMateApp(ctk.CTk):
         tts_toggle = ctk.CTkSwitch(controls, text="TTS", variable=self.tts_enabled)
         tts_toggle.pack(side="left", padx=(0, 8), pady=8)
 
-        submit_button = ctk.CTkButton(controls, text="전송", width=72, command=self.submit_prompt)
-        submit_button.pack(side="left", padx=(0, 8), pady=8)
+        self.submit_button = ctk.CTkButton(
+            controls,
+            text="전송",
+            width=72,
+            command=self.submit_prompt,
+        )
+        self.submit_button.pack(side="left", padx=(0, 8), pady=8)
 
     def select_document(self) -> None:
         path = filedialog.askopenfilename(
@@ -65,19 +72,44 @@ class DeskMateApp(ctk.CTk):
         self.document_label.configure(text=path)
 
     def submit_prompt(self) -> None:
-        prompt = self.prompt_entry.get()
-        self.prompt_entry.delete(0, "end")
+        if self.is_processing:
+            return
 
+        prompt = self.prompt_entry.get()
+        if not prompt.strip():
+            return
+
+        self.prompt_entry.delete(0, "end")
         self._append_message("User", prompt)
-        result = handle_prompt(prompt, document_path=self.document_path)
-        self._append_message("AI", result.message)
+        self._set_processing(True)
+
+        Thread(
+            target=self._process_prompt,
+            args=(prompt, self.document_path),
+            daemon=True,
+        ).start()
+
+    def _process_prompt(self, prompt: str, document_path: str | None) -> None:
+        result = handle_prompt(prompt, document_path=document_path)
+        self.after(0, self._finish_prompt, result.message)
+
+    def _finish_prompt(self, message: str) -> None:
+        self._set_processing(False)
+        self._append_message("AI", message)
 
         if self.tts_enabled.get():
-            speak(result.message)
+            Thread(target=speak, args=(message,), daemon=True).start()
 
     def _append_message(self, sender: str, message: str) -> None:
         self.chat_log.insert("end", f"{sender}: {message}\n\n")
         self.chat_log.see("end")
+
+    def _set_processing(self, processing: bool) -> None:
+        self.is_processing = processing
+        state = "disabled" if processing else "normal"
+        text = "대기" if processing else "전송"
+        self.prompt_entry.configure(state=state)
+        self.submit_button.configure(state=state, text=text)
 
 
 def run() -> None:
