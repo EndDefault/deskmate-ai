@@ -10,9 +10,11 @@ from deskmate_ai.services.storage_service import (
     add_memo,
     get_cached_response,
     get_profile_value,
+    get_similar_cached_response,
     list_recent_memos,
     save_cached_response,
     set_profile_value,
+    stable_hash,
 )
 from deskmate_ai.services.web_service import open_site
 
@@ -38,24 +40,49 @@ def handle_prompt(
         return routed
 
     if document_path and _looks_like_summary_request(normalized):
-        summary = summarize_document(Path(document_path), max_chars=config.document_preview_chars)
+        summary = summarize_document(
+            Path(document_path),
+            max_chars=config.document_preview_chars,
+            config=config,
+        )
         return AssistantResult(message=summary, action="summarize_document")
 
     if _looks_like_open_site_request(normalized):
         opened_url = open_site(normalized)
         return AssistantResult(message=f"{opened_url} 사이트를 열게요.", action="open_site")
 
-    cached = get_cached_response(normalized, config=config)
+    options_hash = _llm_options_hash(config)
+    cached = get_cached_response(
+        normalized,
+        model=config.ollama_model,
+        options_hash=options_hash,
+        config=config,
+    )
     if cached:
         return AssistantResult(message=cached, action="cached_response")
 
+    similar = get_similar_cached_response(
+        normalized,
+        model=config.ollama_model,
+        options_hash=options_hash,
+        config=config,
+    )
+    if similar:
+        return AssistantResult(message=similar.response, action="similar_cached_response")
+
     answer = ask_local_model(normalized, config=config)
     if answer:
-        save_cached_response(normalized, answer, config=config)
+        save_cached_response(
+            normalized,
+            answer,
+            model=config.ollama_model,
+            options_hash=options_hash,
+            config=config,
+        )
         return AssistantResult(message=answer, action="ask_local_model")
 
     return AssistantResult(
-        message="아직은 사이트 열기, 문서 요약, 로컬 AI 답변을 중심으로 지원해요.",
+        message="아직은 사이트 열기, 문서 요약, 로컬 AI 응답을 중심으로 지원해요.",
         action="fallback",
     )
 
@@ -76,7 +103,7 @@ def _handle_local_request(prompt: str, *, config: AppConfig) -> AssistantResult 
     memo_prefixes = ("기억해", "메모해", "remember ", "memo ")
     for prefix in memo_prefixes:
         if lower.startswith(prefix):
-            content = prompt[len(prefix) :].strip(" :：")
+            content = prompt[len(prefix) :].strip(" :->")
             if not content:
                 return AssistantResult(message="기억할 내용을 같이 적어주세요.", action="memo_missing")
             memo = add_memo(content, config=config)
@@ -92,7 +119,7 @@ def _handle_local_request(prompt: str, *, config: AppConfig) -> AssistantResult 
     name_markers = ("내 이름은", "my name is ")
     for marker in name_markers:
         if lower.startswith(marker):
-            name = prompt[len(marker) :].strip(" .:：")
+            name = prompt[len(marker) :].strip(" .:->")
             if not name:
                 return AssistantResult(message="이름을 같이 알려주세요.", action="profile_missing")
             set_profile_value("name", name, config=config)
@@ -105,3 +132,15 @@ def _handle_local_request(prompt: str, *, config: AppConfig) -> AssistantResult 
         return AssistantResult(message="아직 이름을 기억하지 못했어요.", action="get_profile")
 
     return None
+
+
+def _llm_options_hash(config: AppConfig) -> str:
+    return stable_hash(
+        "|".join(
+            [
+                config.ollama_keep_alive,
+                str(config.ollama_max_tokens),
+                str(config.ollama_timeout_seconds),
+            ]
+        )
+    )
