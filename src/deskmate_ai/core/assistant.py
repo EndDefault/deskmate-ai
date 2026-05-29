@@ -8,7 +8,9 @@ from deskmate_ai.services.document_service import summarize_document
 from deskmate_ai.services.llm_service import ask_local_model
 from deskmate_ai.services.storage_service import (
     add_memo,
+    find_keyword_cache_in_text,
     get_cached_response,
+    get_keyword_cache_by_keyword,
     get_profile_value,
     get_similar_cached_response,
     list_recent_memos,
@@ -16,7 +18,7 @@ from deskmate_ai.services.storage_service import (
     set_profile_value,
     stable_hash,
 )
-from deskmate_ai.services.web_service import open_site
+from deskmate_ai.services.web_service import open_site, open_url
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,15 @@ def handle_prompt(
     routed = _handle_local_request(normalized, config=config)
     if routed is not None:
         return routed
+
+    keyword_cache = get_keyword_cache_by_keyword(normalized, config=config)
+    if keyword_cache is None:
+        keyword_cache = find_keyword_cache_in_text(normalized, config=config)
+    if keyword_cache is not None:
+        if keyword_cache.action_type == "open_url":
+            opened_url = open_url(keyword_cache.content)
+            return AssistantResult(message=f"{opened_url} 사이트를 열게요.", action="open_keyword_cache")
+        return AssistantResult(message=keyword_cache.content, action="keyword_cache")
 
     if document_path and _looks_like_summary_request(normalized):
         summary = summarize_document(

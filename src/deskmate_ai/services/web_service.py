@@ -33,3 +33,13 @@ def open_site(prompt: str) -> str:
     url = f"https://www.google.com/search?q={quote_plus(query)}"
     webbrowser.open(url)
     return url
+
+
+def open_url(url: str) -> str:
+    webbrowser.open(url)
+    return url
+
+
+def looks_like_url(value: str) -> bool:
+    lower = value.strip().lower()
+    return lower.startswith(("http://", "https://"))
