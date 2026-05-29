@@ -22,6 +22,16 @@ class CachedResponse:
     score: float = 1.0
 
 
+@dataclass(frozen=True)
+class KeywordCache:
+    id: int
+    keyword: str
+    action_type: str
+    content: str
+    created_at: str
+    updated_at: str
+
+
 def initialize_database(*, config: AppConfig = DEFAULT_CONFIG) -> Path:
     path = config.resolved_database_path
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -63,12 +73,23 @@ def initialize_database(*, config: AppConfig = DEFAULT_CONFIG) -> Path:
                 hit_count INTEGER NOT NULL DEFAULT 0,
                 last_hit_at TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS keyword_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                keyword TEXT NOT NULL,
+                keyword_normalized TEXT NOT NULL UNIQUE,
+                action_type TEXT NOT NULL DEFAULT 'show_text',
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             """
         )
         _ensure_column(connection, "response_cache", "prompt_hash", "TEXT")
         _ensure_column(connection, "response_cache", "model", "TEXT")
         _ensure_column(connection, "response_cache", "options_hash", "TEXT")
         _ensure_column(connection, "response_cache", "expires_at", "TEXT")
+        _ensure_column(connection, "keyword_cache", "action_type", "TEXT NOT NULL DEFAULT 'show_text'")
 
     return path
 
@@ -127,6 +148,144 @@ def list_recent_memos(limit: int = 5, *, config: AppConfig = DEFAULT_CONFIG) -> 
         Memo(id=int(row["id"]), content=str(row["content"]), created_at=str(row["created_at"]))
         for row in rows
     ]
+
+
+def list_keyword_caches(*, config: AppConfig = DEFAULT_CONFIG) -> list[KeywordCache]:
+    initialize_database(config=config)
+    with _connect(config.resolved_database_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT id, keyword, action_type, content, created_at, updated_at
+            FROM keyword_cache
+            ORDER BY keyword COLLATE NOCASE
+            """
+        ).fetchall()
+    return [_keyword_cache_from_row(row) for row in rows]
+
+
+def get_keyword_cache(cache_id: int, *, config: AppConfig = DEFAULT_CONFIG) -> KeywordCache | None:
+    initialize_database(config=config)
+    with _connect(config.resolved_database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id, keyword, action_type, content, created_at, updated_at
+            FROM keyword_cache
+            WHERE id = ?
+            """,
+            (cache_id,),
+        ).fetchone()
+    return None if row is None else _keyword_cache_from_row(row)
+
+
+def get_keyword_cache_by_keyword(
+    keyword: str,
+    *,
+    config: AppConfig = DEFAULT_CONFIG,
+) -> KeywordCache | None:
+    normalized = normalize_prompt(keyword)
+    if not normalized:
+        return None
+
+    initialize_database(config=config)
+    with _connect(config.resolved_database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id, keyword, action_type, content, created_at, updated_at
+            FROM keyword_cache
+            WHERE keyword_normalized = ?
+            """,
+            (normalized,),
+        ).fetchone()
+    return None if row is None else _keyword_cache_from_row(row)
+
+
+def find_keyword_cache_in_text(
+    text: str,
+    *,
+    config: AppConfig = DEFAULT_CONFIG,
+) -> KeywordCache | None:
+    normalized = normalize_prompt(text)
+    if not normalized:
+        return None
+
+    caches = list_keyword_caches(config=config)
+    matches = [
+        cache
+        for cache in caches
+        if normalize_prompt(cache.keyword) and normalize_prompt(cache.keyword) in normalized
+    ]
+    if not matches:
+        return None
+    return max(matches, key=lambda cache: len(normalize_prompt(cache.keyword)))
+
+
+def save_keyword_cache(
+    keyword: str,
+    content: str,
+    *,
+    action_type: str = "show_text",
+    cache_id: int | None = None,
+    config: AppConfig = DEFAULT_CONFIG,
+) -> KeywordCache:
+    keyword = keyword.strip()
+    content = content.strip()
+    if not keyword:
+        raise ValueError("keyword is required")
+    if not content:
+        raise ValueError("content is required")
+    if action_type not in {"show_text", "open_url"}:
+        raise ValueError(f"unsupported action type: {action_type}")
+
+    initialize_database(config=config)
+    now = _utc_now()
+    normalized = normalize_prompt(keyword)
+    with _connect(config.resolved_database_path) as connection:
+        if cache_id is None:
+            cursor = connection.execute(
+                """
+                INSERT INTO keyword_cache(
+                    keyword,
+                    keyword_normalized,
+                    action_type,
+                    content,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(keyword_normalized) DO UPDATE SET
+                    keyword = excluded.keyword,
+                    action_type = excluded.action_type,
+                    content = excluded.content,
+                    updated_at = excluded.updated_at
+                RETURNING id, keyword, action_type, content, created_at, updated_at
+                """,
+                (keyword, normalized, action_type, content, now, now),
+            )
+        else:
+            cursor = connection.execute(
+                """
+                UPDATE keyword_cache
+                SET keyword = ?,
+                    keyword_normalized = ?,
+                    action_type = ?,
+                    content = ?,
+                    updated_at = ?
+                WHERE id = ?
+                RETURNING id, keyword, action_type, content, created_at, updated_at
+                """,
+                (keyword, normalized, action_type, content, now, cache_id),
+            )
+        row = cursor.fetchone()
+        if row is None:
+            raise ValueError(f"keyword cache not found: {cache_id}")
+    return _keyword_cache_from_row(row)
+
+
+def delete_keyword_cache(cache_id: int, *, config: AppConfig = DEFAULT_CONFIG) -> bool:
+    initialize_database(config=config)
+    with _connect(config.resolved_database_path) as connection:
+        cursor = connection.execute("DELETE FROM keyword_cache WHERE id = ?", (cache_id,))
+    return cursor.rowcount > 0
 
 
 def get_cached_response(
@@ -354,6 +513,17 @@ def _ensure_column(connection: sqlite3.Connection, table: str, column: str, defi
     if any(str(row["name"]) == column for row in rows):
         return
     connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _keyword_cache_from_row(row: sqlite3.Row) -> KeywordCache:
+    return KeywordCache(
+        id=int(row["id"]),
+        keyword=str(row["keyword"]),
+        action_type=str(row["action_type"]),
+        content=str(row["content"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
 
 
 def _connect(path: Path) -> sqlite3.Connection:
