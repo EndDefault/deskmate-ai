@@ -40,3 +40,22 @@ def test_local_memo_request_skips_llm(tmp_path) -> None:
     assert stored.action == "add_memo"
     assert fetched.action == "list_memos"
     assert "SQLite 캐시" in fetched.message
+
+
+def test_similar_cache_skips_llm(tmp_path, monkeypatch) -> None:
+    config = AppConfig(database_path=tmp_path / "deskmate.db")
+    calls = {"count": 0}
+
+    def fake_model(*args, **kwargs):
+        calls["count"] += 1
+        return "캐시할 답변"
+
+    monkeypatch.setattr(assistant_module, "ask_local_model", fake_model)
+
+    first = handle_prompt("python cache design local llm response", config=config)
+    second = handle_prompt("python cache design local llm response please", config=config)
+
+    assert first.action == "ask_local_model"
+    assert second.action == "similar_cached_response"
+    assert second.message == "캐시할 답변"
+    assert calls["count"] == 1
