@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import tkinter as tk
 from pathlib import Path
 from threading import Event, Thread
 from tkinter import filedialog
 
 import customtkinter as ctk
-from PIL import Image
+from PIL import Image, ImageTk
 
 from deskmate_ai.services.image_translation_service import (
     ImageTranslationSettings,
     OcrReviewResult,
     TranslationReviewResult,
+    add_manual_ocr_box,
     approve_translation_review,
     collect_image_paths,
     format_ocr_review_text,
@@ -38,11 +40,18 @@ class ImageTranslationReviewWindow(BaseWindow):
         body: str,
         approve_command,
         reject_command,
+        add_box_command=None,
     ) -> None:
         super().__init__(parent, title=title, geometry="980x720")
         self.approve_command = approve_command
         self.reject_command = reject_command
+        self.add_box_command = add_box_command
         self.preview_image = None
+        self.preview_photo = None
+        self.preview_scale = 1.0
+        self.selected_box: tuple[int, int, int, int] | None = None
+        self.drag_start: tuple[int, int] | None = None
+        self.drag_rectangle = None
         self.header(title)
 
         review_frame = ctk.CTkFrame(self.container)
@@ -51,14 +60,42 @@ class ImageTranslationReviewWindow(BaseWindow):
         review_frame.grid_columnconfigure(1, weight=2)
         review_frame.grid_rowconfigure(0, weight=1)
 
-        self.preview_label = ctk.CTkLabel(review_frame, text="", anchor="center")
-        self.preview_label.grid(row=0, column=0, padx=8, pady=8, sticky="nsew")
+        self.preview_canvas = tk.Canvas(review_frame, bg="#111111", highlightthickness=0)
+        self.preview_canvas.grid(row=0, column=0, padx=8, pady=8, sticky="nsew")
         self._show_preview_image(image_path)
 
-        text_box = ctk.CTkTextbox(review_frame, wrap="word")
-        text_box.grid(row=0, column=1, padx=(0, 8), pady=8, sticky="nsew")
-        text_box.insert("end", body)
-        text_box.configure(state="disabled")
+        side_panel = ctk.CTkFrame(review_frame, fg_color="transparent")
+        side_panel.grid(row=0, column=1, padx=(0, 8), pady=8, sticky="nsew")
+        side_panel.grid_rowconfigure(0, weight=1)
+        side_panel.grid_columnconfigure(0, weight=1)
+
+        self.text_box = ctk.CTkTextbox(side_panel, wrap="word")
+        self.text_box.grid(row=0, column=0, sticky="nsew")
+        self._set_body(body)
+
+        if add_box_command is not None:
+            manual_frame = ctk.CTkFrame(side_panel)
+            manual_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+            manual_frame.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(manual_frame, text="누락 영역을 이미지에서 드래그한 뒤 원문을 입력하세요.", anchor="w").grid(
+                row=0,
+                column=0,
+                padx=8,
+                pady=(8, 4),
+                sticky="ew",
+            )
+            self.manual_text = ctk.CTkEntry(manual_frame, placeholder_text="누락된 영어 원문")
+            self.manual_text.grid(row=1, column=0, padx=8, pady=(0, 8), sticky="ew")
+            ctk.CTkButton(manual_frame, text="영역 추가", command=self._add_manual_box).grid(
+                row=2,
+                column=0,
+                padx=8,
+                pady=(0, 8),
+                sticky="ew",
+            )
+            self.preview_canvas.bind("<ButtonPress-1>", self._start_drag)
+            self.preview_canvas.bind("<B1-Motion>", self._drag)
+            self.preview_canvas.bind("<ButtonRelease-1>", self._finish_drag)
 
         actions = ctk.CTkFrame(self.container, fg_color="transparent")
         actions.pack(fill="x")
@@ -69,10 +106,61 @@ class ImageTranslationReviewWindow(BaseWindow):
         image = Image.open(image_path)
         max_width = 560
         max_height = 560
-        scale = min(max_width / image.width, max_height / image.height, 1)
-        size = (max(1, int(image.width * scale)), max(1, int(image.height * scale)))
-        self.preview_image = ctk.CTkImage(light_image=image, dark_image=image, size=size)
-        self.preview_label.configure(image=self.preview_image, text="")
+        self.preview_scale = min(max_width / image.width, max_height / image.height, 1)
+        size = (max(1, int(image.width * self.preview_scale)), max(1, int(image.height * self.preview_scale)))
+        self.preview_image = image.resize(size)
+        self.preview_photo = ImageTk.PhotoImage(self.preview_image)
+        self.preview_canvas.configure(width=size[0], height=size[1], scrollregion=(0, 0, size[0], size[1]))
+        self.preview_canvas.delete("all")
+        self.preview_canvas.create_image(0, 0, image=self.preview_photo, anchor="nw")
+
+    def _set_body(self, body: str) -> None:
+        self.text_box.configure(state="normal")
+        self.text_box.delete("1.0", "end")
+        self.text_box.insert("end", body)
+        self.text_box.configure(state="disabled")
+
+    def _start_drag(self, event) -> None:
+        self.drag_start = (event.x, event.y)
+        if self.drag_rectangle is not None:
+            self.preview_canvas.delete(self.drag_rectangle)
+        self.drag_rectangle = self.preview_canvas.create_rectangle(event.x, event.y, event.x, event.y, outline="#38bdf8", width=2)
+
+    def _drag(self, event) -> None:
+        if self.drag_start is None or self.drag_rectangle is None:
+            return
+        start_x, start_y = self.drag_start
+        self.preview_canvas.coords(self.drag_rectangle, start_x, start_y, event.x, event.y)
+
+    def _finish_drag(self, event) -> None:
+        if self.drag_start is None:
+            return
+        start_x, start_y = self.drag_start
+        left = max(0, min(start_x, event.x))
+        top = max(0, min(start_y, event.y))
+        right = max(start_x, event.x)
+        bottom = max(start_y, event.y)
+        if right - left < 4 or bottom - top < 4:
+            self.selected_box = None
+            return
+        self.selected_box = (
+            int(left / self.preview_scale),
+            int(top / self.preview_scale),
+            int((right - left) / self.preview_scale),
+            int((bottom - top) / self.preview_scale),
+        )
+
+    def _add_manual_box(self) -> None:
+        if self.add_box_command is None or self.selected_box is None:
+            return
+        text = self.manual_text.get().strip()
+        if not text:
+            return
+        image_path, body = self.add_box_command(text, self.selected_box)
+        self.manual_text.delete(0, "end")
+        self.selected_box = None
+        self._show_preview_image(image_path)
+        self._set_body(body)
 
     def _approve(self) -> None:
         self.destroy()
@@ -269,6 +357,7 @@ class ImageTranslationWindow(BaseWindow):
             title="OCR 검수",
             image_path=review.preview_path,
             body=format_ocr_review_text(review.boxes),
+            add_box_command=self.add_manual_ocr_box_to_review,
         )
         self._update_progress(
             (self.current_index + 0.35) / max(1, len(self.selected_images)),
@@ -357,7 +446,26 @@ class ImageTranslationWindow(BaseWindow):
         self.cancel_button.configure(state="disabled", text="강제 종료")
         self.status_label.configure(text=message)
 
-    def _open_review_window(self, *, title: str, image_path: Path, body: str) -> None:
+    def add_manual_ocr_box_to_review(self, text: str, box: tuple[int, int, int, int]) -> tuple[Path, str]:
+        if self.current_ocr_review is None or self.current_settings is None:
+            raise RuntimeError("OCR 검수 정보가 없습니다.")
+        left, top, width, height = box
+        self.current_ocr_review = add_manual_ocr_box(
+            self.current_ocr_review,
+            self.current_settings,
+            text=text,
+            left=left,
+            top=top,
+            width=width,
+            height=height,
+        )
+        self._update_progress(
+            (self.current_index + 0.35) / max(1, len(self.selected_images)),
+            f"OCR 수동 추가: {text}",
+        )
+        return self.current_ocr_review.preview_path, format_ocr_review_text(self.current_ocr_review.boxes)
+
+    def _open_review_window(self, *, title: str, image_path: Path, body: str, add_box_command=None) -> None:
         self._close_review_window()
         self.review_window = ImageTranslationReviewWindow(
             self,
@@ -366,6 +474,7 @@ class ImageTranslationWindow(BaseWindow):
             body=body,
             approve_command=self.approve_current_stage,
             reject_command=self.reject_current_stage,
+            add_box_command=add_box_command,
         )
         self.review_window.focus()
 

@@ -3,7 +3,9 @@ from pathlib import Path
 from deskmate_ai.services import image_translation_service as service
 from deskmate_ai.services.image_translation_service import (
     ImageTranslationSettings,
+    OcrReviewResult,
     OcrTextBox,
+    add_manual_ocr_box,
     collect_image_paths,
     estimate_total_steps,
     run_image_translation,
@@ -87,6 +89,26 @@ def test_run_image_translation_saves_output_with_mocked_pipeline(tmp_path: Path,
 
     assert progress[-1].stage == "결과 저장"
     assert progress[-1].output_path == output
+
+
+def test_add_manual_ocr_box_updates_review(tmp_path: Path, monkeypatch) -> None:
+    image = tmp_path / "page.jpg"
+    image.write_bytes(b"fake")
+    review = OcrReviewResult(image_path=image, image=object(), boxes=[], preview_path=tmp_path / "old.png")
+    monkeypatch.setattr(service, "_render_ocr_review_image", lambda *_: tmp_path / "new.png")
+
+    updated = add_manual_ocr_box(
+        review,
+        make_settings(),
+        text=" AH, HELLO ",
+        left=10,
+        top=20,
+        width=30,
+        height=40,
+    )
+
+    assert updated.preview_path == tmp_path / "new.png"
+    assert updated.boxes == [OcrTextBox("AH, HELLO", left=10, top=20, width=30, height=40, confidence=1.0)]
 
 
 def test_translate_texts_parses_pipe_numbered_batch(monkeypatch) -> None:

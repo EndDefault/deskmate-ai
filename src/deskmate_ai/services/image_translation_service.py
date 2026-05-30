@@ -134,6 +134,32 @@ def prepare_translation_review(
     )
 
 
+def add_manual_ocr_box(
+    review: OcrReviewResult,
+    settings: ImageTranslationSettings,
+    *,
+    text: str,
+    left: int,
+    top: int,
+    width: int,
+    height: int,
+) -> OcrReviewResult:
+    cleaned = text.strip()
+    if not cleaned or width <= 0 or height <= 0:
+        return review
+    box = OcrTextBox(
+        text=cleaned,
+        left=max(0, left),
+        top=max(0, top),
+        width=max(1, width),
+        height=max(1, height),
+        confidence=1.0,
+    )
+    boxes = sorted([*review.boxes, box], key=lambda item: (item.top, item.left))
+    preview_path = _render_ocr_review_image(review.image_path, review.image, boxes, settings)
+    return OcrReviewResult(image_path=review.image_path, image=review.image, boxes=boxes, preview_path=preview_path)
+
+
 def approve_translation_review(review: TranslationReviewResult) -> Path:
     review.final_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(review.preview_path, review.final_path)
@@ -311,47 +337,54 @@ def _extract_text_boxes(image, settings: ImageTranslationSettings) -> list[OcrTe
     except ImportError as exc:
         raise RuntimeError("pytesseract가 설치되어 있지 않습니다. pip install -e . 명령으로 의존성을 다시 설치해 주세요.") from exc
 
-    min_confidence = min(settings.min_confidence * 100, 35)
-    grouped: dict[tuple[str, int, int, int], list[tuple[str, int, int, int, int, float]]] = defaultdict(list)
-    for pass_name, pass_image, tesseract_config in _ocr_image_passes(image, settings):
+    try:
+        data = pytesseract.image_to_data(
+            image,
+            lang=TESSERACT_LANGUAGES.get(settings.source_language, "eng"),
+            output_type=pytesseract.Output.DICT,
+        )
+    except pytesseract.TesseractNotFoundError as exc:
+        raise RuntimeError("Tesseract 실행 파일을 찾을 수 없습니다. Tesseract OCR을 설치한 뒤 다시 실행해 주세요.") from exc
+
+    min_confidence = settings.min_confidence * 100
+    grouped: dict[tuple[int, int, int], list[tuple[str, int, int, int, int, float]]] = defaultdict(list)
+    for index, raw_text in enumerate(data.get("text", [])):
+        text = str(raw_text).strip()
+        if not text:
+            continue
         try:
-            data = pytesseract.image_to_data(
-                pass_image,
-                lang=TESSERACT_LANGUAGES.get(settings.source_language, "eng"),
-                config=tesseract_config,
-                output_type=pytesseract.Output.DICT,
+            confidence = float(data["conf"][index])
+        except (TypeError, ValueError):
+            continue
+        if confidence < min_confidence:
+            continue
+        key = (
+            int(data.get("block_num", [0])[index]),
+            int(data.get("par_num", [0])[index]),
+            int(data.get("line_num", [0])[index]),
+        )
+        grouped[key].append(
+            (
+                text,
+                int(data["left"][index]),
+                int(data["top"][index]),
+                int(data["width"][index]),
+                int(data["height"][index]),
+                confidence / 100,
             )
-        except pytesseract.TesseractNotFoundError as exc:
-            raise RuntimeError("Tesseract 실행 파일을 찾을 수 없습니다. Tesseract OCR을 설치한 뒤 다시 실행해 주세요.") from exc
+        )
 
-        for index, raw_text in enumerate(data.get("text", [])):
-            text = _clean_ocr_word(str(raw_text))
-            if not text:
-                continue
-            try:
-                confidence = float(data["conf"][index])
-            except (TypeError, ValueError):
-                continue
-            if confidence < min_confidence:
-                continue
-            key = (
-                pass_name,
-                int(data.get("block_num", [0])[index]),
-                int(data.get("par_num", [0])[index]),
-                int(data.get("line_num", [0])[index]),
-            )
-            grouped[key].append(
-                (
-                    text,
-                    int(data["left"][index]),
-                    int(data["top"][index]),
-                    int(data["width"][index]),
-                    int(data["height"][index]),
-                    confidence / 100,
-                )
-            )
-
-    return _dedupe_ocr_boxes(_line_boxes_from_words(grouped.values()))
+    boxes: list[OcrTextBox] = []
+    for words in grouped.values():
+        words.sort(key=lambda item: item[1])
+        text = " ".join(word[0] for word in words)
+        left = min(word[1] for word in words)
+        top = min(word[2] for word in words)
+        right = max(word[1] + word[3] for word in words)
+        bottom = max(word[2] + word[4] for word in words)
+        confidence = sum(word[5] for word in words) / len(words)
+        boxes.append(OcrTextBox(text=text, left=left, top=top, width=right - left, height=bottom - top, confidence=confidence))
+    return sorted(boxes, key=lambda box: (box.top, box.left))
 
 
 def _translate_boxes(
@@ -367,113 +400,6 @@ def _translate_boxes(
     translated_texts = _translate_texts(unique_texts, settings, config=config)
     cache = dict(zip(unique_texts, translated_texts, strict=False))
     return [(box, cache.get(box.text, box.text)) for box in boxes]
-
-
-def _ocr_image_passes(image, settings: ImageTranslationSettings):
-    yield "default", image, ""
-    yield "psm6", image, "--psm 6"
-    yield "sparse", image, "--psm 11"
-
-    if settings.ocr_passes < 2:
-        return
-
-    from PIL import ImageEnhance, ImageOps
-
-    grayscale = ImageOps.grayscale(image)
-    sharpened = ImageEnhance.Sharpness(grayscale).enhance(2.2).convert("RGB")
-    yield "sharp-sparse", sharpened, "--psm 11"
-
-    if settings.ocr_passes < 3:
-        return
-
-    threshold = grayscale.point(lambda value: 255 if value > 165 else 0).convert("RGB")
-    yield "threshold", threshold, "--psm 6"
-    yield "threshold-sparse", threshold, "--psm 11"
-
-    if settings.ocr_passes < 4:
-        return
-
-    inverted = ImageOps.invert(grayscale).convert("RGB")
-    yield "inverted-sparse", inverted, "--psm 11"
-
-
-def _clean_ocr_word(text: str) -> str:
-    cleaned = text.strip()
-    if not cleaned:
-        return ""
-    if not re.search(r"[A-Za-z0-9가-힣ぁ-んァ-ン一-龥]", cleaned):
-        return ""
-    return cleaned
-
-
-def _line_boxes_from_words(word_groups) -> list[OcrTextBox]:
-    boxes: list[OcrTextBox] = []
-    for words in word_groups:
-        words = list(words)
-        if not words:
-            continue
-        words.sort(key=lambda item: item[1])
-        text = " ".join(word[0] for word in words)
-        left = min(word[1] for word in words)
-        top = min(word[2] for word in words)
-        right = max(word[1] + word[3] for word in words)
-        bottom = max(word[2] + word[4] for word in words)
-        confidence = sum(word[5] for word in words) / len(words)
-        boxes.append(OcrTextBox(text=text, left=left, top=top, width=right - left, height=bottom - top, confidence=confidence))
-    return sorted(boxes, key=lambda box: (box.top, box.left))
-
-
-def _dedupe_ocr_boxes(boxes: list[OcrTextBox]) -> list[OcrTextBox]:
-    result: list[OcrTextBox] = []
-    for box in sorted(boxes, key=lambda item: (-item.confidence, item.top, item.left)):
-        duplicate_index = _find_duplicate_box(result, box)
-        if duplicate_index is None:
-            result.append(box)
-            continue
-        duplicate = result[duplicate_index]
-        if box.confidence > duplicate.confidence or len(box.text) > len(duplicate.text):
-            result[duplicate_index] = box
-    return sorted(result, key=lambda box: (box.top, box.left))
-
-
-def _find_duplicate_box(boxes: list[OcrTextBox], candidate: OcrTextBox) -> int | None:
-    candidate_text = _normalize_translation_text(candidate.text)
-    for index, box in enumerate(boxes):
-        if _box_iou(box, candidate) < 0.65:
-            continue
-        if candidate_text == _normalize_translation_text(box.text):
-            return index
-        if _box_contains(box, candidate) or _box_contains(candidate, box):
-            return index
-    return None
-
-
-def _box_iou(first: OcrTextBox, second: OcrTextBox) -> float:
-    first_right = first.left + first.width
-    first_bottom = first.top + first.height
-    second_right = second.left + second.width
-    second_bottom = second.top + second.height
-    overlap_left = max(first.left, second.left)
-    overlap_top = max(first.top, second.top)
-    overlap_right = min(first_right, second_right)
-    overlap_bottom = min(first_bottom, second_bottom)
-    overlap_width = max(0, overlap_right - overlap_left)
-    overlap_height = max(0, overlap_bottom - overlap_top)
-    overlap = overlap_width * overlap_height
-    if overlap == 0:
-        return 0
-    first_area = first.width * first.height
-    second_area = second.width * second.height
-    return overlap / max(1, first_area + second_area - overlap)
-
-
-def _box_contains(outer: OcrTextBox, inner: OcrTextBox) -> bool:
-    return (
-        inner.left >= outer.left
-        and inner.top >= outer.top
-        and inner.left + inner.width <= outer.left + outer.width
-        and inner.top + inner.height <= outer.top + outer.height
-    )
 
 
 def _translate_texts(texts: list[str], settings: ImageTranslationSettings, *, config: AppConfig) -> list[str]:
