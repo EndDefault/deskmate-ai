@@ -88,15 +88,27 @@ class ImageTranslationWindow(BaseWindow):
         cache_frame.grid_columnconfigure(3, weight=1)
         cache_frame.grid_columnconfigure(5, weight=1)
         ctk.CTkLabel(cache_frame, text="번역 캐시 1", anchor="w").grid(row=0, column=0, padx=8, pady=(8, 4), sticky="w")
-        self.primary_cache_menu = ctk.CTkOptionMenu(cache_frame, values=[NO_REQUIRED_CACHE])
+        self.primary_cache_menu = ctk.CTkOptionMenu(
+            cache_frame,
+            values=[NO_REQUIRED_CACHE],
+            command=lambda _: self._sync_cache_dropdowns(),
+        )
         self.primary_cache_menu.grid(row=0, column=1, padx=8, pady=(8, 4), sticky="ew")
 
         ctk.CTkLabel(cache_frame, text="번역 캐시 2", anchor="w").grid(row=0, column=2, padx=8, pady=(8, 4), sticky="w")
-        self.secondary_cache_menu = ctk.CTkOptionMenu(cache_frame, values=[NO_OPTIONAL_CACHE])
+        self.secondary_cache_menu = ctk.CTkOptionMenu(
+            cache_frame,
+            values=[NO_OPTIONAL_CACHE],
+            command=lambda _: self._sync_cache_dropdowns(),
+        )
         self.secondary_cache_menu.grid(row=0, column=3, padx=8, pady=(8, 4), sticky="ew")
 
         ctk.CTkLabel(cache_frame, text="번역 캐시 3", anchor="w").grid(row=1, column=0, padx=8, pady=(4, 8), sticky="w")
-        self.tertiary_cache_menu = ctk.CTkOptionMenu(cache_frame, values=[NO_OPTIONAL_CACHE])
+        self.tertiary_cache_menu = ctk.CTkOptionMenu(
+            cache_frame,
+            values=[NO_OPTIONAL_CACHE],
+            command=lambda _: self._sync_cache_dropdowns(),
+        )
         self.tertiary_cache_menu.grid(row=1, column=1, padx=8, pady=(4, 8), sticky="ew")
 
         ctk.CTkButton(cache_frame, text="번역용 캐시 보기", command=self.show_translation_cache).grid(
@@ -188,16 +200,51 @@ class ImageTranslationWindow(BaseWindow):
     def _refresh_cache_groups(self) -> None:
         previous = self._selected_cache_group_names()
         names = self._cache_category_names()
-        primary_values = names or [NO_REQUIRED_CACHE]
-        optional_values = [NO_OPTIONAL_CACHE, *names]
 
-        self.primary_cache_menu.configure(values=primary_values)
-        self.secondary_cache_menu.configure(values=optional_values)
-        self.tertiary_cache_menu.configure(values=optional_values)
-
-        self.primary_cache_menu.set(previous[0] if previous and previous[0] in names else primary_values[0])
+        self.primary_cache_menu.set(previous[0] if previous and previous[0] in names else (names[0] if names else NO_REQUIRED_CACHE))
         self.secondary_cache_menu.set(previous[1] if len(previous) > 1 and previous[1] in names else NO_OPTIONAL_CACHE)
         self.tertiary_cache_menu.set(previous[2] if len(previous) > 2 and previous[2] in names else NO_OPTIONAL_CACHE)
+        self._sync_cache_dropdowns()
+
+    def _sync_cache_dropdowns(self) -> None:
+        names = self._cache_category_names()
+        primary = self.primary_cache_menu.get()
+        secondary = self.secondary_cache_menu.get()
+        tertiary = self.tertiary_cache_menu.get()
+
+        if primary not in names:
+            primary = names[0] if names else NO_REQUIRED_CACHE
+        if secondary not in names:
+            secondary = NO_OPTIONAL_CACHE
+        if tertiary not in names:
+            tertiary = NO_OPTIONAL_CACHE
+
+        if secondary == primary:
+            secondary = NO_OPTIONAL_CACHE
+        if tertiary in {primary, secondary}:
+            tertiary = NO_OPTIONAL_CACHE
+
+        self.primary_cache_menu.set(primary)
+        self.secondary_cache_menu.set(secondary)
+        self.tertiary_cache_menu.set(tertiary)
+
+        self.primary_cache_menu.configure(values=self._cache_options(names, primary, [secondary, tertiary], required=True))
+        self.secondary_cache_menu.configure(values=self._cache_options(names, secondary, [primary, tertiary]))
+        self.tertiary_cache_menu.configure(values=self._cache_options(names, tertiary, [primary, secondary]))
+
+    def _cache_options(
+        self,
+        names: list[str],
+        current: str,
+        selected_elsewhere: list[str],
+        *,
+        required: bool = False,
+    ) -> list[str]:
+        blocked = {name for name in selected_elsewhere if name not in {NO_OPTIONAL_CACHE, NO_REQUIRED_CACHE}}
+        values = [name for name in names if name not in blocked or name == current]
+        if required:
+            return values or [NO_REQUIRED_CACHE]
+        return [NO_OPTIONAL_CACHE, *values]
 
     def _selected_cache_group_names(self) -> list[str]:
         selected = [
