@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 from tkinter import filedialog
 
 import customtkinter as ctk
@@ -26,6 +26,7 @@ class ImageTranslationWindow(BaseWindow):
         super().__init__(parent, title="이미지 번역", geometry="760x700")
         self.selected_sources: list[Path] = []
         self.selected_images: list[Path] = []
+        self.cancel_event = Event()
         self.is_running = False
         self._build()
 
@@ -60,7 +61,7 @@ class ImageTranslationWindow(BaseWindow):
 
         ctk.CTkLabel(settings, text="OCR 반복").grid(row=1, column=0, padx=8, pady=4, sticky="w")
         self.ocr_passes = ctk.CTkOptionMenu(settings, values=["1", "2", "3", "4", "5"])
-        self.ocr_passes.set("3")
+        self.ocr_passes.set("1")
         self.ocr_passes.grid(row=1, column=1, padx=8, pady=4, sticky="ew")
 
         ctk.CTkLabel(settings, text="업스케일").grid(row=1, column=2, padx=8, pady=4, sticky="w")
@@ -123,8 +124,13 @@ class ImageTranslationWindow(BaseWindow):
         self.status_label.pack(fill="x", pady=(0, 8))
         self.log = ctk.CTkTextbox(self.container, wrap="word", height=220)
         self.log.pack(fill="both", expand=True, pady=(0, 12))
-        self.start_button = ctk.CTkButton(self.container, text="시작", command=self.start_translation)
-        self.start_button.pack(anchor="e")
+
+        actions = ctk.CTkFrame(self.container, fg_color="transparent")
+        actions.pack(fill="x")
+        self.cancel_button = ctk.CTkButton(actions, text="강제 종료", state="disabled", command=self.cancel_translation)
+        self.cancel_button.pack(side="right")
+        self.start_button = ctk.CTkButton(actions, text="시작", command=self.start_translation)
+        self.start_button.pack(side="right", padx=(0, 8))
 
     def select_images(self) -> None:
         paths = filedialog.askopenfilenames(
@@ -153,14 +159,27 @@ class ImageTranslationWindow(BaseWindow):
             return
 
         self.is_running = True
+        self.cancel_event.clear()
         self.start_button.configure(state="disabled", text="실행 중")
+        self.cancel_button.configure(state="normal", text="강제 종료")
         self.log.delete("1.0", "end")
         Thread(target=self._run_translation, args=(self._settings(),), daemon=True).start()
 
     def _run_translation(self, settings: ImageTranslationSettings) -> None:
-        for progress in run_image_translation(self.selected_images, settings):
+        for progress in run_image_translation(
+            self.selected_images,
+            settings,
+            should_cancel=self.cancel_event.is_set,
+        ):
             self.after(0, self._update_progress, progress.ratio, f"{progress.stage}: {progress.message}")
         self.after(0, self._finish_translation)
+
+    def cancel_translation(self) -> None:
+        if not self.is_running:
+            return
+        self.cancel_event.set()
+        self.cancel_button.configure(state="disabled", text="종료 중")
+        self.status_label.configure(text="현재 단계가 끝나면 작업을 중단합니다.")
 
     def _update_progress(self, ratio: float, message: str) -> None:
         self.progress.set(ratio)
@@ -171,6 +190,7 @@ class ImageTranslationWindow(BaseWindow):
     def _finish_translation(self) -> None:
         self.is_running = False
         self.start_button.configure(state="normal", text="시작")
+        self.cancel_button.configure(state="disabled", text="강제 종료")
         self.status_label.configure(text="작업 완료")
 
     def _refresh_selected_images(self) -> None:

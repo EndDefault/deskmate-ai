@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import re
 import textwrap
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from deskmate_ai.config import DEFAULT_CONFIG, AppConfig
 from deskmate_ai.services.ai import ask_local_model
@@ -82,6 +84,7 @@ def run_image_translation(
     settings: ImageTranslationSettings,
     *,
     config: AppConfig = DEFAULT_CONFIG,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> Iterable[ImageTranslationProgress]:
     total = estimate_total_steps(len(image_paths), settings)
     current = 0
@@ -90,6 +93,10 @@ def run_image_translation(
         return
 
     for image_path in image_paths:
+        if _is_cancelled(should_cancel):
+            yield ImageTranslationProgress(current, total, "취소", "작업을 취소했습니다.")
+            return
+
         current += 1
         yield ImageTranslationProgress(current, total, "이미지 로딩", image_path.name)
 
@@ -104,6 +111,9 @@ def run_image_translation(
 
         text_boxes: list[OcrTextBox] = []
         for pass_index in range(1, max(1, settings.ocr_passes) + 1):
+            if _is_cancelled(should_cancel):
+                yield ImageTranslationProgress(current, total, "취소", "작업을 취소했습니다.")
+                return
             if pass_index == max(1, settings.ocr_passes):
                 try:
                     text_boxes = _extract_text_boxes(working_image, settings)
@@ -118,6 +128,16 @@ def run_image_translation(
                 f"{image_path.name}: OCR {pass_index}/{settings.ocr_passes}회",
             )
 
+        if _is_cancelled(should_cancel):
+            yield ImageTranslationProgress(current, total, "취소", "작업을 취소했습니다.")
+            return
+
+        yield ImageTranslationProgress(
+            current,
+            total,
+            "번역 요청",
+            f"{image_path.name}: {len(text_boxes)}개 줄을 한 번에 번역 중",
+        )
         current += 1
         translations = _translate_boxes(text_boxes, settings, config=config)
         yield ImageTranslationProgress(
@@ -126,6 +146,10 @@ def run_image_translation(
             "번역",
             f"{image_path.name}: {len(translations)}개 텍스트 번역",
         )
+
+        if _is_cancelled(should_cancel):
+            yield ImageTranslationProgress(current, total, "취소", "작업을 취소했습니다.")
+            return
 
         current += 1
         output_path = _render_translated_image(image_path, working_image, translations, settings)
@@ -210,8 +234,8 @@ def _extract_text_boxes(image, settings: ImageTranslationSettings) -> list[OcrTe
     except pytesseract.TesseractNotFoundError as exc:
         raise RuntimeError("Tesseract 실행 파일을 찾을 수 없습니다. Tesseract OCR을 설치한 뒤 다시 실행해 주세요.") from exc
 
-    boxes: list[OcrTextBox] = []
     min_confidence = settings.min_confidence * 100
+    grouped: dict[tuple[int, int, int], list[tuple[str, int, int, int, int, float]]] = defaultdict(list)
     for index, raw_text in enumerate(data.get("text", [])):
         text = str(raw_text).strip()
         if not text:
@@ -222,17 +246,33 @@ def _extract_text_boxes(image, settings: ImageTranslationSettings) -> list[OcrTe
             continue
         if confidence < min_confidence:
             continue
-        boxes.append(
-            OcrTextBox(
-                text=text,
-                left=int(data["left"][index]),
-                top=int(data["top"][index]),
-                width=int(data["width"][index]),
-                height=int(data["height"][index]),
-                confidence=confidence / 100,
+        key = (
+            int(data.get("block_num", [0])[index]),
+            int(data.get("par_num", [0])[index]),
+            int(data.get("line_num", [0])[index]),
+        )
+        grouped[key].append(
+            (
+                text,
+                int(data["left"][index]),
+                int(data["top"][index]),
+                int(data["width"][index]),
+                int(data["height"][index]),
+                confidence / 100,
             )
         )
-    return boxes
+
+    boxes: list[OcrTextBox] = []
+    for words in grouped.values():
+        words.sort(key=lambda item: item[1])
+        text = " ".join(word[0] for word in words)
+        left = min(word[1] for word in words)
+        top = min(word[2] for word in words)
+        right = max(word[1] + word[3] for word in words)
+        bottom = max(word[2] + word[4] for word in words)
+        confidence = sum(word[5] for word in words) / len(words)
+        boxes.append(OcrTextBox(text=text, left=left, top=top, width=right - left, height=bottom - top, confidence=confidence))
+    return sorted(boxes, key=lambda box: (box.top, box.left))
 
 
 def _translate_boxes(
@@ -241,13 +281,38 @@ def _translate_boxes(
     *,
     config: AppConfig,
 ) -> list[tuple[OcrTextBox, str]]:
-    translations: list[tuple[OcrTextBox, str]] = []
-    cache: dict[str, str] = {}
-    for box in boxes:
-        if box.text not in cache:
-            cache[box.text] = _translate_text(box.text, settings, config=config)
-        translations.append((box, cache[box.text]))
-    return translations
+    if settings.source_language == settings.target_language:
+        return [(box, box.text) for box in boxes]
+
+    unique_texts = list(dict.fromkeys(box.text for box in boxes))
+    translated_texts = _translate_texts(unique_texts, settings, config=config)
+    cache = dict(zip(unique_texts, translated_texts, strict=False))
+    return [(box, cache.get(box.text, box.text)) for box in boxes]
+
+
+def _translate_texts(texts: list[str], settings: ImageTranslationSettings, *, config: AppConfig) -> list[str]:
+    if not texts:
+        return []
+    if len(texts) == 1:
+        return [_translate_text(texts[0], settings, config=config)]
+
+    numbered_lines = "\n".join(f"{index + 1}. {text}" for index, text in enumerate(texts))
+    prompt = (
+        "Translate each numbered item. "
+        f"Source language: {settings.source_language}. "
+        f"Target language: {settings.target_language}. "
+        "Keep the same numbering and return one translated item per line. "
+        "Do not add explanations.\n\n"
+        f"{numbered_lines}"
+    )
+    translated = ask_local_model(prompt, config=config)
+    if not translated:
+        return texts
+
+    parsed = _parse_numbered_translations(translated, expected_count=len(texts))
+    if len(parsed) != len(texts):
+        return texts
+    return parsed
 
 
 def _translate_text(text: str, settings: ImageTranslationSettings, *, config: AppConfig) -> str:
@@ -264,6 +329,17 @@ def _translate_text(text: str, settings: ImageTranslationSettings, *, config: Ap
     return translated or text
 
 
+def _parse_numbered_translations(response: str, *, expected_count: int) -> list[str]:
+    translations: list[str] = []
+    for raw_line in response.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^\s*\d+\s*[\).\:-]\s*", "", line)
+        translations.append(line)
+    return translations[:expected_count]
+
+
 def _render_translated_image(
     image_path: Path,
     image,
@@ -271,21 +347,21 @@ def _render_translated_image(
     settings: ImageTranslationSettings,
 ) -> Path:
     try:
-        from PIL import ImageDraw, ImageFont
+        from PIL import ImageDraw
     except ImportError as exc:
         raise RuntimeError("Pillow가 설치되어 있지 않습니다. pip install -e . 명령으로 의존성을 다시 설치해 주세요.") from exc
 
     output = image.copy()
     draw = ImageDraw.Draw(output)
-    font = ImageFont.load_default()
     for box, translated_text in translations:
-        padding = 3
+        padding = 4
         left = max(0, box.left - padding)
         top = max(0, box.top - padding)
         right = min(output.width, box.left + box.width + padding)
         bottom = min(output.height, box.top + box.height + padding)
         draw.rectangle((left, top, right, bottom), fill="white")
-        wrapped = _wrap_text_for_width(translated_text, max(1, right - left), font)
+        font = _load_translation_font(max(12, min(28, int((bottom - top) * 0.7))))
+        wrapped = _wrap_text_for_width(translated_text, max(1, right - left - padding * 2), font)
         draw.multiline_text((left + padding, top + padding), wrapped, fill="black", font=font, spacing=2)
 
     output_dir = settings.output_dir or image_path.parent / "translated"
@@ -295,8 +371,22 @@ def _render_translated_image(
     return output_path
 
 
+def _load_translation_font(size: int):
+    from PIL import ImageFont
+
+    font_paths = [
+        Path("C:/Windows/Fonts/malgun.ttf"),
+        Path("C:/Windows/Fonts/malgunbd.ttf"),
+        Path("C:/Windows/Fonts/arial.ttf"),
+    ]
+    for font_path in font_paths:
+        if font_path.exists():
+            return ImageFont.truetype(str(font_path), size=size)
+    return ImageFont.load_default()
+
+
 def _wrap_text_for_width(text: str, width: int, font) -> str:
-    average_char_width = max(1, int(font.getlength("M")))
+    average_char_width = max(1, int(font.getlength("가" if any("\uac00" <= char <= "\ud7a3" for char in text) else "M")))
     max_chars = max(4, width // average_char_width)
     return "\n".join(textwrap.wrap(text, width=max_chars)) or text
 
@@ -321,3 +411,7 @@ def _dedupe_paths(paths: list[Path]) -> list[Path]:
         seen.add(resolved)
         result.append(path)
     return result
+
+
+def _is_cancelled(should_cancel: Callable[[], bool] | None) -> bool:
+    return bool(should_cancel and should_cancel())
