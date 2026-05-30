@@ -9,13 +9,18 @@ from deskmate_ai.services.storage_service import (
     get_cached_response,
     get_keyword_cache,
     get_keyword_cache_by_keyword,
+    get_keyword_cache_category,
     get_profile_value,
     get_similar_cached_response,
     initialize_database,
+    list_keyword_cache_categories,
     list_recent_memos,
+    list_translation_cache_groups,
     save_cached_response,
     save_document_summary,
     save_keyword_cache,
+    save_keyword_cache_category,
+    save_translation_cache_group,
     set_profile_value,
 )
 
@@ -64,24 +69,8 @@ def test_response_cache_separates_model_options(tmp_path: Path) -> None:
         config=config,
     )
 
-    assert (
-        get_cached_response(
-            "hello deskmate",
-            model="qwen3:4b",
-            options_hash="fast",
-            config=config,
-        )
-        == "cached answer"
-    )
-    assert (
-        get_cached_response(
-            "hello deskmate",
-            model="llama3.2:3b",
-            options_hash="fast",
-            config=config,
-        )
-        is None
-    )
+    assert get_cached_response("hello deskmate", model="qwen3:4b", options_hash="fast", config=config) == "cached answer"
+    assert get_cached_response("hello deskmate", model="llama3.2:3b", options_hash="fast", config=config) is None
 
 
 def test_similar_response_cache_returns_high_confidence_match(tmp_path: Path) -> None:
@@ -116,16 +105,46 @@ def test_document_summary_cache_round_trip(tmp_path: Path) -> None:
     assert get_cached_document_summary(document, file_hash, 1200, config=config) == "summary"
 
 
-def test_keyword_cache_round_trip(tmp_path: Path) -> None:
+def test_keyword_cache_categories_round_trip(tmp_path: Path) -> None:
     config = AppConfig(database_path=tmp_path / "deskmate.db")
 
-    saved = save_keyword_cache("아카라이브", "https://arca.live", action_type="open_url", config=config)
-    fetched = get_keyword_cache_by_keyword(" 아카라이브 ", config=config)
+    saved = save_keyword_cache_category("사이트 캐시", config=config)
+    categories = list_keyword_cache_categories(config=config)
+
+    assert saved in categories
+    assert get_keyword_cache_category(saved.id, config=config) == saved
+
+
+def test_keyword_cache_round_trip(tmp_path: Path) -> None:
+    config = AppConfig(database_path=tmp_path / "deskmate.db")
+    category = save_keyword_cache_category("사이트 캐시", config=config)
+
+    saved = save_keyword_cache(
+        "아카라이브",
+        "https://arca.live",
+        category_id=category.id,
+        action_type="open_url",
+        config=config,
+    )
+    fetched = get_keyword_cache_by_keyword(" 아카라이브", category_ids=[category.id], config=config)
 
     assert fetched == saved
     assert fetched is not None
+    assert fetched.category_id == category.id
     assert fetched.action_type == "open_url"
     assert get_keyword_cache(saved.id, config=config) == saved
+
+
+def test_keyword_cache_respects_category_filter(tmp_path: Path) -> None:
+    config = AppConfig(database_path=tmp_path / "deskmate.db")
+    first_category = save_keyword_cache_category("첫 번째", config=config)
+    second_category = save_keyword_cache_category("두 번째", config=config)
+    save_keyword_cache("공통", "first", category_id=first_category.id, config=config)
+    second = save_keyword_cache("공통", "second", category_id=second_category.id, config=config)
+
+    fetched = get_keyword_cache_by_keyword("공통", category_ids=[second_category.id], config=config)
+
+    assert fetched == second
 
 
 def test_keyword_cache_updates_existing_keyword(tmp_path: Path) -> None:
@@ -154,3 +173,20 @@ def test_find_keyword_cache_in_text(tmp_path: Path) -> None:
     matched = find_keyword_cache_in_text("아카라이브 사이트 열어줘", config=config)
 
     assert matched == saved
+
+
+def test_translation_cache_group_default_exists(tmp_path: Path) -> None:
+    config = AppConfig(database_path=tmp_path / "deskmate.db")
+
+    groups = list_translation_cache_groups(config=config)
+
+    assert any(group.name == "일본어 캐시" for group in groups)
+
+
+def test_translation_cache_group_round_trip(tmp_path: Path) -> None:
+    config = AppConfig(database_path=tmp_path / "deskmate.db")
+
+    saved = save_translation_cache_group("중국어 캐시", "zh", "ko", config=config)
+    groups = list_translation_cache_groups(config=config)
+
+    assert saved in groups
