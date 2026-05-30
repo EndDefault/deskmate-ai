@@ -11,6 +11,19 @@ from deskmate_ai.services.image_translation_service import (
 )
 
 
+def make_settings() -> ImageTranslationSettings:
+    return ImageTranslationSettings(
+        source_language="en",
+        target_language="ko",
+        ocr_passes=1,
+        upscale_factor=1,
+        enhance_contrast=False,
+        grayscale=False,
+        min_confidence=0.55,
+        cache_group_names=["영어 캐시"],
+    )
+
+
 def test_collect_image_paths_reads_files_and_folders(tmp_path: Path) -> None:
     image = tmp_path / "page.jpg"
     nested = tmp_path / "nested.png"
@@ -74,3 +87,29 @@ def test_run_image_translation_saves_output_with_mocked_pipeline(tmp_path: Path,
 
     assert progress[-1].stage == "결과 저장"
     assert progress[-1].output_path == output
+
+
+def test_translate_texts_parses_pipe_numbered_batch(monkeypatch) -> None:
+    monkeypatch.setattr(service, "ask_local_model", lambda *_args, **_kwargs: "1|안녕하세요\n2|좋은 저녁입니다")
+
+    result = service._translate_texts(["Hello", "Good evening"], make_settings(), config=object())
+
+    assert result == ["안녕하세요", "좋은 저녁입니다"]
+
+
+def test_translate_texts_falls_back_per_missing_item(monkeypatch) -> None:
+    monkeypatch.setattr(service, "ask_local_model", lambda *_args, **_kwargs: "1. 안녕하세요")
+    monkeypatch.setattr(service, "_translate_text", lambda text, *_args, **_kwargs: f"개별 번역: {text}")
+
+    result = service._translate_texts(["Hello", "Good evening"], make_settings(), config=object())
+
+    assert result == ["안녕하세요", "개별 번역: Good evening"]
+
+
+def test_translate_texts_falls_back_to_individual_when_batch_is_empty(monkeypatch) -> None:
+    monkeypatch.setattr(service, "ask_local_model", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(service, "_translate_text", lambda text, *_args, **_kwargs: f"개별 번역: {text}")
+
+    result = service._translate_texts(["Hello", "Good evening"], make_settings(), config=object())
+
+    assert result == ["개별 번역: Hello", "개별 번역: Good evening"]

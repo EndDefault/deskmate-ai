@@ -140,11 +140,16 @@ def run_image_translation(
         )
         current += 1
         translations = _translate_boxes(text_boxes, settings, config=config)
+        translated_count = sum(
+            1
+            for box, translated_text in translations
+            if _normalize_translation_text(translated_text) != _normalize_translation_text(box.text)
+        )
         yield ImageTranslationProgress(
             current,
             total,
             "번역",
-            f"{image_path.name}: {len(translations)}개 텍스트 번역",
+            f"{image_path.name}: {translated_count}/{len(translations)}개 텍스트 변환",
         )
 
         if _is_cancelled(should_cancel):
@@ -296,23 +301,30 @@ def _translate_texts(texts: list[str], settings: ImageTranslationSettings, *, co
     if len(texts) == 1:
         return [_translate_text(texts[0], settings, config=config)]
 
-    numbered_lines = "\n".join(f"{index + 1}. {text}" for index, text in enumerate(texts))
+    numbered_lines = "\n".join(f"{index + 1}|{text}" for index, text in enumerate(texts))
     prompt = (
         "Translate each numbered item. "
         f"Source language: {settings.source_language}. "
         f"Target language: {settings.target_language}. "
-        "Keep the same numbering and return one translated item per line. "
+        "Return exactly one line per input in this format: number|translated text. "
+        "Keep names, IDs, numbers, and symbols as needed, but translate natural-language sentences. "
+        "If text is explicit or adult, translate it neutrally without censoring. "
         "Do not add explanations.\n\n"
         f"{numbered_lines}"
     )
     translated = ask_local_model(prompt, config=config)
-    if not translated:
-        return texts
+    parsed = _parse_numbered_translation_map(translated or "")
+    if not parsed:
+        return [_translate_text(text, settings, config=config) for text in texts]
 
-    parsed = _parse_numbered_translations(translated, expected_count=len(texts))
-    if len(parsed) != len(texts):
-        return texts
-    return parsed
+    results: list[str] = []
+    for index, source_text in enumerate(texts, start=1):
+        translated_text = parsed.get(index)
+        if translated_text:
+            results.append(translated_text)
+            continue
+        results.append(_translate_text(source_text, settings, config=config))
+    return results
 
 
 def _translate_text(text: str, settings: ImageTranslationSettings, *, config: AppConfig) -> str:
@@ -330,14 +342,52 @@ def _translate_text(text: str, settings: ImageTranslationSettings, *, config: Ap
 
 
 def _parse_numbered_translations(response: str, *, expected_count: int) -> list[str]:
+    translation_map = _parse_numbered_translation_map(response)
+    if translation_map:
+        return [translation_map[index] for index in sorted(translation_map)[:expected_count]]
+
     translations: list[str] = []
+    for raw_line in response.splitlines():
+        line = raw_line.strip()
+        if line:
+            translations.append(line)
+    return translations[:expected_count]
+
+
+def _parse_numbered_translation_map(response: str) -> dict[int, str]:
+    translations: dict[int, str] = {}
+    pending_index: int | None = None
+    pending_lines: list[str] = []
+
+    def flush_pending() -> None:
+        nonlocal pending_index, pending_lines
+        if pending_index is None:
+            return
+        text = " ".join(line.strip() for line in pending_lines if line.strip()).strip()
+        if text:
+            translations[pending_index] = text
+        pending_index = None
+        pending_lines = []
+
     for raw_line in response.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        line = re.sub(r"^\s*\d+\s*[\).\:-]\s*", "", line)
-        translations.append(line)
-    return translations[:expected_count]
+        match = re.match(r"^\s*(\d+)\s*(?:[\|).\]:：-]|\s+-\s+)\s*(.+?)\s*$", line)
+        if match:
+            flush_pending()
+            pending_index = int(match.group(1))
+            pending_lines = [match.group(2)]
+            continue
+        if pending_index is not None:
+            pending_lines.append(line)
+
+    flush_pending()
+    return translations
+
+
+def _normalize_translation_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().casefold()
 
 
 def _render_translated_image(
