@@ -9,16 +9,16 @@ import customtkinter as ctk
 from deskmate_ai.services.image_translation_service import (
     ImageTranslationSettings,
     collect_image_paths,
-    run_image_translation_preview,
+    run_image_translation,
 )
 from deskmate_ai.services.storage_service import list_keyword_cache_categories
-from deskmate_ai.ui.constants import LANGUAGE_PAIRS
+from deskmate_ai.ui.constants import SOURCE_LANGUAGES, TARGET_LANGUAGES
 from deskmate_ai.ui.windows.base_window import BaseWindow
 
 
 class ImageTranslationWindow(BaseWindow):
     def __init__(self, parent) -> None:
-        super().__init__(parent, title="이미지 번역", geometry="720x680")
+        super().__init__(parent, title="이미지 번역", geometry="760x700")
         self.selected_sources: list[Path] = []
         self.selected_images: list[Path] = []
         self.is_running = False
@@ -39,10 +39,15 @@ class ImageTranslationWindow(BaseWindow):
         settings.grid_columnconfigure(1, weight=1)
         settings.grid_columnconfigure(3, weight=1)
 
-        ctk.CTkLabel(settings, text="번역 언어", anchor="w").grid(row=0, column=0, padx=8, pady=(8, 4), sticky="w")
-        self.language_menu = ctk.CTkOptionMenu(settings, values=list(LANGUAGE_PAIRS.keys()))
-        self.language_menu.set(next(iter(LANGUAGE_PAIRS)))
-        self.language_menu.grid(row=0, column=1, columnspan=3, padx=8, pady=(8, 4), sticky="ew")
+        ctk.CTkLabel(settings, text="원문 언어", anchor="w").grid(row=0, column=0, padx=8, pady=(8, 4), sticky="w")
+        self.source_language_menu = ctk.CTkOptionMenu(settings, values=list(SOURCE_LANGUAGES.keys()))
+        self.source_language_menu.set("영어")
+        self.source_language_menu.grid(row=0, column=1, padx=8, pady=(8, 4), sticky="ew")
+
+        ctk.CTkLabel(settings, text="번역 언어", anchor="w").grid(row=0, column=2, padx=8, pady=(8, 4), sticky="w")
+        self.target_language_menu = ctk.CTkOptionMenu(settings, values=list(TARGET_LANGUAGES.keys()))
+        self.target_language_menu.set("한국어")
+        self.target_language_menu.grid(row=0, column=3, padx=8, pady=(8, 4), sticky="ew")
 
         ctk.CTkLabel(settings, text="OCR 반복").grid(row=1, column=0, padx=8, pady=4, sticky="w")
         self.ocr_passes = ctk.CTkOptionMenu(settings, values=["1", "2", "3", "4", "5"])
@@ -116,7 +121,7 @@ class ImageTranslationWindow(BaseWindow):
         Thread(target=self._run_translation, args=(self._settings(),), daemon=True).start()
 
     def _run_translation(self, settings: ImageTranslationSettings) -> None:
-        for progress in run_image_translation_preview(self.selected_images, settings):
+        for progress in run_image_translation(self.selected_images, settings):
             self.after(0, self._update_progress, progress.ratio, f"{progress.stage}: {progress.message}")
         self.after(0, self._finish_translation)
 
@@ -129,17 +134,16 @@ class ImageTranslationWindow(BaseWindow):
     def _finish_translation(self) -> None:
         self.is_running = False
         self.start_button.configure(state="normal", text="시작")
-        self.status_label.configure(text="작업 미리보기 완료")
+        self.status_label.configure(text="작업 완료")
 
     def _refresh_selected_images(self) -> None:
         self.selected_images = collect_image_paths(self.selected_sources)
         self.source_label.configure(text=f"선택한 이미지: {len(self.selected_images)}개")
 
     def _settings(self) -> ImageTranslationSettings:
-        source_language, target_language = LANGUAGE_PAIRS[self.language_menu.get()]
         return ImageTranslationSettings(
-            source_language=source_language,
-            target_language=target_language,
+            source_language=SOURCE_LANGUAGES[self.source_language_menu.get()],
+            target_language=TARGET_LANGUAGES[self.target_language_menu.get()],
             ocr_passes=int(self.ocr_passes.get()),
             upscale_factor=int(self.upscale_factor.get()),
             enhance_contrast=self.contrast_enabled.get(),

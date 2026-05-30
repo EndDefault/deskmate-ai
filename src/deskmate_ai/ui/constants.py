@@ -4,4 +4,14 @@ ACTION_LABELS = {
     "translate": "번역",
 }
 ACTION_VALUES = {label: value for value, label in ACTION_LABELS.items()}
-LANGUAGE_PAIRS = {"일본어 -> 한국어": ("ja", "ko")}
+
+SOURCE_LANGUAGES = {
+    "영어": "en",
+    "일본어": "ja",
+    "한국어": "ko",
+}
+TARGET_LANGUAGES = {
+    "한국어": "ko",
+    "영어": "en",
+    "일본어": "ja",
+}
