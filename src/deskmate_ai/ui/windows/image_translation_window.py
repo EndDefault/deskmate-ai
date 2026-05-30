@@ -17,12 +17,15 @@ from deskmate_ai.ui.windows.base_window import BaseWindow
 from deskmate_ai.ui.windows.translation_cache_window import TranslationCacheWindow
 
 
+NO_OPTIONAL_CACHE = "사용 안 함"
+NO_REQUIRED_CACHE = "사용 가능한 캐시 없음"
+
+
 class ImageTranslationWindow(BaseWindow):
     def __init__(self, parent) -> None:
         super().__init__(parent, title="이미지 번역", geometry="760x700")
         self.selected_sources: list[Path] = []
         self.selected_images: list[Path] = []
-        self.cache_group_vars: dict[str, ctk.BooleanVar] = {}
         self.is_running = False
         self._build()
 
@@ -42,7 +45,11 @@ class ImageTranslationWindow(BaseWindow):
         settings.grid_columnconfigure(3, weight=1)
 
         ctk.CTkLabel(settings, text="원문 언어", anchor="w").grid(row=0, column=0, padx=8, pady=(8, 4), sticky="w")
-        self.source_language_menu = ctk.CTkOptionMenu(settings, values=list(SOURCE_LANGUAGES.keys()))
+        self.source_language_menu = ctk.CTkOptionMenu(
+            settings,
+            values=list(SOURCE_LANGUAGES.keys()),
+            command=lambda _: self._refresh_cache_groups(),
+        )
         self.source_language_menu.set("영어")
         self.source_language_menu.grid(row=0, column=1, padx=8, pady=(8, 4), sticky="ew")
 
@@ -78,15 +85,24 @@ class ImageTranslationWindow(BaseWindow):
         cache_frame = ctk.CTkFrame(self.container)
         cache_frame.pack(fill="x", pady=(0, 12))
         cache_frame.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(cache_frame, text="사용할 캐시 카테고리", anchor="w").grid(
-            row=0, column=0, padx=8, pady=8, sticky="w"
-        )
-        self.cache_group_frame = ctk.CTkScrollableFrame(cache_frame, height=88)
-        self.cache_group_frame.grid(row=0, column=1, padx=8, pady=8, sticky="ew")
-        self._build_cache_group_options()
+        cache_frame.grid_columnconfigure(3, weight=1)
+        cache_frame.grid_columnconfigure(5, weight=1)
+        ctk.CTkLabel(cache_frame, text="번역 캐시 1", anchor="w").grid(row=0, column=0, padx=8, pady=(8, 4), sticky="w")
+        self.primary_cache_menu = ctk.CTkOptionMenu(cache_frame, values=[NO_REQUIRED_CACHE])
+        self.primary_cache_menu.grid(row=0, column=1, padx=8, pady=(8, 4), sticky="ew")
+
+        ctk.CTkLabel(cache_frame, text="번역 캐시 2", anchor="w").grid(row=0, column=2, padx=8, pady=(8, 4), sticky="w")
+        self.secondary_cache_menu = ctk.CTkOptionMenu(cache_frame, values=[NO_OPTIONAL_CACHE])
+        self.secondary_cache_menu.grid(row=0, column=3, padx=8, pady=(8, 4), sticky="ew")
+
+        ctk.CTkLabel(cache_frame, text="번역 캐시 3", anchor="w").grid(row=1, column=0, padx=8, pady=(4, 8), sticky="w")
+        self.tertiary_cache_menu = ctk.CTkOptionMenu(cache_frame, values=[NO_OPTIONAL_CACHE])
+        self.tertiary_cache_menu.grid(row=1, column=1, padx=8, pady=(4, 8), sticky="ew")
+
         ctk.CTkButton(cache_frame, text="번역용 캐시 보기", command=self.show_translation_cache).grid(
-            row=0, column=2, padx=(0, 8), pady=8, sticky="e"
+            row=1, column=5, padx=8, pady=(4, 8), sticky="e"
         )
+        self._refresh_cache_groups()
 
         self.progress = ctk.CTkProgressBar(self.container)
         self.progress.set(0)
@@ -119,6 +135,9 @@ class ImageTranslationWindow(BaseWindow):
         self._refresh_selected_images()
         if not self.selected_images:
             self.status_label.configure(text="처리할 이미지를 선택해 주세요.")
+            return
+        if not self._selected_cache_group_names():
+            self.status_label.configure(text="원문 언어에 맞는 번역 캐시를 먼저 만들어 주세요.")
             return
 
         self.is_running = True
@@ -163,40 +182,32 @@ class ImageTranslationWindow(BaseWindow):
         )
 
     def _cache_category_names(self) -> list[str]:
-        names = [group.name for group in list_translation_cache_groups()]
-        return names or ["기본 캐시"]
+        source_language = SOURCE_LANGUAGES[self.source_language_menu.get()]
+        return [group.name for group in list_translation_cache_groups() if group.source_language == source_language]
 
     def _refresh_cache_groups(self) -> None:
-        self._build_cache_group_options()
-
-    def _build_cache_group_options(self) -> None:
-        existing_selected = set(self._selected_cache_group_names())
-        for child in self.cache_group_frame.winfo_children():
-            child.destroy()
-        self.cache_group_vars.clear()
-
+        previous = self._selected_cache_group_names()
         names = self._cache_category_names()
-        selected_any = False
-        for index, name in enumerate(names):
-            selected = name in existing_selected or (not existing_selected and index == 0)
-            var = ctk.BooleanVar(value=selected)
-            self.cache_group_vars[name] = var
-            selected_any = selected_any or selected
-            ctk.CTkCheckBox(
-                self.cache_group_frame,
-                text=name,
-                variable=var,
-                command=lambda item=name: self._enforce_cache_group_limit(item),
-            ).pack(fill="x", pady=2)
+        primary_values = names or [NO_REQUIRED_CACHE]
+        optional_values = [NO_OPTIONAL_CACHE, *names]
 
-        if names and not selected_any:
-            self.cache_group_vars[names[0]].set(True)
+        self.primary_cache_menu.configure(values=primary_values)
+        self.secondary_cache_menu.configure(values=optional_values)
+        self.tertiary_cache_menu.configure(values=optional_values)
+
+        self.primary_cache_menu.set(previous[0] if previous and previous[0] in names else primary_values[0])
+        self.secondary_cache_menu.set(previous[1] if len(previous) > 1 and previous[1] in names else NO_OPTIONAL_CACHE)
+        self.tertiary_cache_menu.set(previous[2] if len(previous) > 2 and previous[2] in names else NO_OPTIONAL_CACHE)
 
     def _selected_cache_group_names(self) -> list[str]:
-        return [name for name, var in self.cache_group_vars.items() if var.get()]
-
-    def _enforce_cache_group_limit(self, changed_name: str) -> None:
-        if len(self._selected_cache_group_names()) <= 3:
-            return
-        self.cache_group_vars[changed_name].set(False)
-        self.status_label.configure(text="사용할 번역 캐시는 최대 3개까지 선택할 수 있습니다.")
+        selected = [
+            self.primary_cache_menu.get(),
+            self.secondary_cache_menu.get(),
+            self.tertiary_cache_menu.get(),
+        ]
+        result: list[str] = []
+        for name in selected:
+            if name in {NO_OPTIONAL_CACHE, NO_REQUIRED_CACHE} or name in result:
+                continue
+            result.append(name)
+        return result
