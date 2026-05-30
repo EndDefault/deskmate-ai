@@ -5,7 +5,7 @@ from pathlib import Path
 
 from deskmate_ai.config import DEFAULT_CONFIG, AppConfig
 from deskmate_ai.services.document_service import summarize_document
-from deskmate_ai.services.llm_service import ask_local_model
+from deskmate_ai.services.ai import AIProvider, ask_local_model
 from deskmate_ai.services.storage_service import (
     add_memo,
     find_keyword_cache_in_text,
@@ -31,6 +31,8 @@ def handle_prompt(
     prompt: str,
     document_path: str | None = None,
     *,
+    cache_category_ids: list[int] | None = None,
+    ai_provider: AIProvider | None = None,
     config: AppConfig = DEFAULT_CONFIG,
 ) -> AssistantResult:
     normalized = prompt.strip()
@@ -41,14 +43,15 @@ def handle_prompt(
     if routed is not None:
         return routed
 
-    keyword_cache = get_keyword_cache_by_keyword(normalized, config=config)
-    if keyword_cache is None:
-        keyword_cache = find_keyword_cache_in_text(normalized, config=config)
-    if keyword_cache is not None:
-        if keyword_cache.action_type == "open_url":
-            opened_url = open_url(keyword_cache.content)
-            return AssistantResult(message=f"{opened_url} 사이트를 열게요.", action="open_keyword_cache")
-        return AssistantResult(message=keyword_cache.content, action="keyword_cache")
+    if cache_category_ids != []:
+        keyword_cache = get_keyword_cache_by_keyword(normalized, category_ids=cache_category_ids, config=config)
+        if keyword_cache is None:
+            keyword_cache = find_keyword_cache_in_text(normalized, category_ids=cache_category_ids, config=config)
+        if keyword_cache is not None:
+            if keyword_cache.action_type == "open_url":
+                opened_url = open_url(keyword_cache.content)
+                return AssistantResult(message=f"{opened_url} 사이트를 열게요.", action="open_keyword_cache")
+            return AssistantResult(message=keyword_cache.content, action="keyword_cache")
 
     if document_path and _looks_like_summary_request(normalized):
         summary = summarize_document(
@@ -81,7 +84,7 @@ def handle_prompt(
     if similar:
         return AssistantResult(message=similar.response, action="similar_cached_response")
 
-    answer = ask_local_model(normalized, config=config)
+    answer = ai_provider.ask(normalized) if ai_provider else ask_local_model(normalized, config=config)
     if answer:
         save_cached_response(
             normalized,

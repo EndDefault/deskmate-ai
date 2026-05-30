@@ -74,6 +74,16 @@ def test_keyword_cache_shows_text(tmp_path, monkeypatch) -> None:
     assert result.message == "https://arca.live"
 
 
+def test_keyword_cache_can_be_disabled_by_empty_category_selection(tmp_path, monkeypatch) -> None:
+    config = AppConfig(database_path=tmp_path / "deskmate.db")
+    save_keyword_cache("아카라이브", "https://arca.live", config=config)
+    monkeypatch.setattr(assistant_module, "ask_local_model", lambda *args, **kwargs: None)
+
+    result = handle_prompt("아카라이브", cache_category_ids=[], config=config)
+
+    assert result.action == "fallback"
+
+
 def test_open_url_keyword_cache_opens_without_open_word(tmp_path, monkeypatch) -> None:
     config = AppConfig(database_path=tmp_path / "deskmate.db")
     opened: list[str] = []
