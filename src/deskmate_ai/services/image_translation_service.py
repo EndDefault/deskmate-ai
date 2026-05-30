@@ -12,6 +12,7 @@ import json
 
 from deskmate_ai.config import DEFAULT_CONFIG, AppConfig
 from deskmate_ai.services.ai import ask_local_model
+from deskmate_ai.services.storage_service import list_translation_cache_groups, list_translation_terms
 
 
 SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
@@ -156,6 +157,14 @@ def add_manual_ocr_box(
         confidence=1.0,
     )
     boxes = sorted([*review.boxes, box], key=lambda item: (item.top, item.left))
+    preview_path = _render_ocr_review_image(review.image_path, review.image, boxes, settings)
+    return OcrReviewResult(image_path=review.image_path, image=review.image, boxes=boxes, preview_path=preview_path)
+
+
+def delete_ocr_box(review: OcrReviewResult, settings: ImageTranslationSettings, *, index: int) -> OcrReviewResult:
+    if index < 0 or index >= len(review.boxes):
+        return review
+    boxes = [box for box_index, box in enumerate(review.boxes) if box_index != index]
     preview_path = _render_ocr_review_image(review.image_path, review.image, boxes, settings)
     return OcrReviewResult(image_path=review.image_path, image=review.image, boxes=boxes, preview_path=preview_path)
 
@@ -377,13 +386,14 @@ def _extract_text_boxes(image, settings: ImageTranslationSettings) -> list[OcrTe
     boxes: list[OcrTextBox] = []
     for words in grouped.values():
         words.sort(key=lambda item: item[1])
-        text = " ".join(word[0] for word in words)
-        left = min(word[1] for word in words)
-        top = min(word[2] for word in words)
-        right = max(word[1] + word[3] for word in words)
-        bottom = max(word[2] + word[4] for word in words)
-        confidence = sum(word[5] for word in words) / len(words)
-        boxes.append(OcrTextBox(text=text, left=left, top=top, width=right - left, height=bottom - top, confidence=confidence))
+        for segment in _split_words_by_horizontal_gap(words):
+            text = " ".join(word[0] for word in segment)
+            left = min(word[1] for word in segment)
+            top = min(word[2] for word in segment)
+            right = max(word[1] + word[3] for word in segment)
+            bottom = max(word[2] + word[4] for word in segment)
+            confidence = sum(word[5] for word in segment) / len(segment)
+            boxes.append(OcrTextBox(text=text, left=left, top=top, width=right - left, height=bottom - top, confidence=confidence))
     return sorted(boxes, key=lambda box: (box.top, box.left))
 
 
@@ -396,10 +406,57 @@ def _translate_boxes(
     if settings.source_language == settings.target_language:
         return [(box, box.text) for box in boxes]
 
+    cache = _translation_cache_map(settings, config=config)
     unique_texts = list(dict.fromkeys(box.text for box in boxes))
-    translated_texts = _translate_texts(unique_texts, settings, config=config)
-    cache = dict(zip(unique_texts, translated_texts, strict=False))
-    return [(box, cache.get(box.text, box.text)) for box in boxes]
+    missing_texts = [text for text in unique_texts if _normalize_translation_text(text) not in cache]
+    translated_texts = _translate_texts(missing_texts, settings, config=config)
+    generated = dict(zip(missing_texts, translated_texts, strict=False))
+
+    translations: list[tuple[OcrTextBox, str]] = []
+    for box in boxes:
+        translated = cache.get(_normalize_translation_text(box.text), generated.get(box.text, box.text))
+        translations.append((box, translated))
+    return translations
+
+
+def _split_words_by_horizontal_gap(words: list[tuple[str, int, int, int, int, float]]) -> list[list[tuple[str, int, int, int, int, float]]]:
+    if not words:
+        return []
+    average_height = sum(word[4] for word in words) / len(words)
+    gap_threshold = max(32, int(average_height * 2.8))
+    segments: list[list[tuple[str, int, int, int, int, float]]] = [[words[0]]]
+    for word in words[1:]:
+        previous = segments[-1][-1]
+        gap = word[1] - (previous[1] + previous[3])
+        if gap > gap_threshold:
+            segments.append([word])
+            continue
+        segments[-1].append(word)
+    return segments
+
+
+def _translation_cache_map(settings: ImageTranslationSettings, *, config: AppConfig) -> dict[str, str]:
+    if not settings.cache_group_names:
+        return {}
+
+    selected_names = set(settings.cache_group_names)
+    groups = [
+        group
+        for group in list_translation_cache_groups(config=config)
+        if group.name in selected_names
+        and group.source_language == settings.source_language
+        and group.target_language == settings.target_language
+    ]
+    translations: dict[str, str] = {}
+    for group in groups:
+        for term in list_translation_terms(
+            group_id=group.id,
+            source_language=settings.source_language,
+            target_language=settings.target_language,
+            config=config,
+        ):
+            translations[_normalize_translation_text(term.source_text)] = term.translated_text
+    return translations
 
 
 def _translate_texts(texts: list[str], settings: ImageTranslationSettings, *, config: AppConfig) -> list[str]:

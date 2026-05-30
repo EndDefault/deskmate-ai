@@ -15,6 +15,7 @@ from deskmate_ai.services.image_translation_service import (
     add_manual_ocr_box,
     approve_translation_review,
     collect_image_paths,
+    delete_ocr_box,
     format_ocr_review_text,
     format_translation_review_text,
     prepare_ocr_review,
@@ -41,11 +42,13 @@ class ImageTranslationReviewWindow(BaseWindow):
         approve_command,
         reject_command,
         add_box_command=None,
+        delete_box_command=None,
     ) -> None:
         super().__init__(parent, title=title, geometry="980x720")
         self.approve_command = approve_command
         self.reject_command = reject_command
         self.add_box_command = add_box_command
+        self.delete_box_command = delete_box_command
         self.preview_image = None
         self.preview_photo = None
         self.preview_scale = 1.0
@@ -69,9 +72,17 @@ class ImageTranslationReviewWindow(BaseWindow):
         side_panel.grid_rowconfigure(0, weight=1)
         side_panel.grid_columnconfigure(0, weight=1)
 
-        self.text_box = ctk.CTkTextbox(side_panel, wrap="word")
-        self.text_box.grid(row=0, column=0, sticky="nsew")
-        self._set_body(body)
+        self.body = body
+        if delete_box_command is None:
+            self.text_box = ctk.CTkTextbox(side_panel, wrap="word")
+            self.text_box.grid(row=0, column=0, sticky="nsew")
+            self._set_body(body)
+            self.item_list = None
+        else:
+            self.text_box = None
+            self.item_list = ctk.CTkScrollableFrame(side_panel)
+            self.item_list.grid(row=0, column=0, sticky="nsew")
+            self._set_body(body)
 
         if add_box_command is not None:
             manual_frame = ctk.CTkFrame(side_panel)
@@ -115,10 +126,35 @@ class ImageTranslationReviewWindow(BaseWindow):
         self.preview_canvas.create_image(0, 0, image=self.preview_photo, anchor="nw")
 
     def _set_body(self, body: str) -> None:
+        self.body = body
+        if self.item_list is not None:
+            self._render_deletable_items(body)
+            return
+        if self.text_box is None:
+            return
         self.text_box.configure(state="normal")
         self.text_box.delete("1.0", "end")
         self.text_box.insert("end", body)
         self.text_box.configure(state="disabled")
+
+    def _render_deletable_items(self, body: str) -> None:
+        if self.item_list is None:
+            return
+        for child in self.item_list.winfo_children():
+            child.destroy()
+        lines = body.splitlines() or ["OCR로 감지한 텍스트가 없습니다."]
+        for index, line in enumerate(lines):
+            row = ctk.CTkFrame(self.item_list, fg_color="transparent")
+            row.pack(fill="x", pady=2)
+            delete_button = ctk.CTkButton(
+                row,
+                text="X",
+                width=32,
+                fg_color="#b91c1c",
+                command=lambda row_index=index: self._delete_box(row_index),
+            )
+            delete_button.pack(side="left", padx=(0, 6))
+            ctk.CTkLabel(row, text=line, anchor="w", justify="left", wraplength=330).pack(side="left", fill="x", expand=True)
 
     def _start_drag(self, event) -> None:
         self.drag_start = (event.x, event.y)
@@ -159,6 +195,13 @@ class ImageTranslationReviewWindow(BaseWindow):
         image_path, body = self.add_box_command(text, self.selected_box)
         self.manual_text.delete(0, "end")
         self.selected_box = None
+        self._show_preview_image(image_path)
+        self._set_body(body)
+
+    def _delete_box(self, index: int) -> None:
+        if self.delete_box_command is None:
+            return
+        image_path, body = self.delete_box_command(index)
         self._show_preview_image(image_path)
         self._set_body(body)
 
@@ -358,6 +401,7 @@ class ImageTranslationWindow(BaseWindow):
             image_path=review.preview_path,
             body=format_ocr_review_text(review.boxes),
             add_box_command=self.add_manual_ocr_box_to_review,
+            delete_box_command=self.delete_ocr_box_from_review,
         )
         self._update_progress(
             (self.current_index + 0.35) / max(1, len(self.selected_images)),
@@ -465,7 +509,19 @@ class ImageTranslationWindow(BaseWindow):
         )
         return self.current_ocr_review.preview_path, format_ocr_review_text(self.current_ocr_review.boxes)
 
-    def _open_review_window(self, *, title: str, image_path: Path, body: str, add_box_command=None) -> None:
+    def delete_ocr_box_from_review(self, index: int) -> tuple[Path, str]:
+        if self.current_ocr_review is None or self.current_settings is None:
+            raise RuntimeError("OCR 검수 정보가 없습니다.")
+        removed_text = self.current_ocr_review.boxes[index].text if 0 <= index < len(self.current_ocr_review.boxes) else ""
+        self.current_ocr_review = delete_ocr_box(self.current_ocr_review, self.current_settings, index=index)
+        if removed_text:
+            self._update_progress(
+                (self.current_index + 0.35) / max(1, len(self.selected_images)),
+                f"OCR 삭제: {removed_text}",
+            )
+        return self.current_ocr_review.preview_path, format_ocr_review_text(self.current_ocr_review.boxes)
+
+    def _open_review_window(self, *, title: str, image_path: Path, body: str, add_box_command=None, delete_box_command=None) -> None:
         self._close_review_window()
         self.review_window = ImageTranslationReviewWindow(
             self,
@@ -475,6 +531,7 @@ class ImageTranslationWindow(BaseWindow):
             approve_command=self.approve_current_stage,
             reject_command=self.reject_current_stage,
             add_box_command=add_box_command,
+            delete_box_command=delete_box_command,
         )
         self.review_window.focus()
 

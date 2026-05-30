@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from deskmate_ai.services import image_translation_service as service
+from deskmate_ai.storage.models import TranslationCacheGroup, TranslationTerm
 from deskmate_ai.services.image_translation_service import (
     ImageTranslationSettings,
     OcrReviewResult,
@@ -109,6 +110,61 @@ def test_add_manual_ocr_box_updates_review(tmp_path: Path, monkeypatch) -> None:
 
     assert updated.preview_path == tmp_path / "new.png"
     assert updated.boxes == [OcrTextBox("AH, HELLO", left=10, top=20, width=30, height=40, confidence=1.0)]
+
+
+def test_delete_ocr_box_updates_review(tmp_path: Path, monkeypatch) -> None:
+    image = tmp_path / "page.jpg"
+    image.write_bytes(b"fake")
+    review = OcrReviewResult(
+        image_path=image,
+        image=object(),
+        boxes=[
+            OcrTextBox("keep", left=1, top=1, width=10, height=10, confidence=0.8),
+            OcrTextBox("remove", left=20, top=1, width=10, height=10, confidence=0.8),
+        ],
+        preview_path=tmp_path / "old.png",
+    )
+    monkeypatch.setattr(service, "_render_ocr_review_image", lambda *_: tmp_path / "new.png")
+
+    updated = service.delete_ocr_box(review, make_settings(), index=1)
+
+    assert updated.preview_path == tmp_path / "new.png"
+    assert [box.text for box in updated.boxes] == ["keep"]
+
+
+def test_split_words_by_horizontal_gap_separates_panels() -> None:
+    words = [
+        ("left", 10, 10, 20, 10, 0.9),
+        ("panel", 35, 10, 30, 10, 0.9),
+        ("right", 180, 10, 30, 10, 0.9),
+    ]
+
+    segments = service._split_words_by_horizontal_gap(words)
+
+    assert [[word[0] for word in segment] for segment in segments] == [["left", "panel"], ["right"]]
+
+
+def test_translate_boxes_uses_translation_cache_before_model(monkeypatch) -> None:
+    settings = make_settings()
+    monkeypatch.setattr(
+        service,
+        "list_translation_cache_groups",
+        lambda **_kwargs: [TranslationCacheGroup(1, "영어 캐시", "en", "ko", "", "")],
+    )
+    monkeypatch.setattr(
+        service,
+        "list_translation_terms",
+        lambda **_kwargs: [TranslationTerm(1, 1, "en", "ko", "thank you. head over around", "고마워. 근처로 와.", "", "", "")],
+    )
+    monkeypatch.setattr(service, "ask_local_model", lambda *_args, **_kwargs: "1|모델 번역")
+
+    result = service._translate_boxes(
+        [OcrTextBox("thank you. head over around", left=0, top=0, width=20, height=10, confidence=0.9)],
+        settings,
+        config=object(),
+    )
+
+    assert result[0][1] == "고마워. 근처로 와."
 
 
 def test_translate_texts_parses_pipe_numbered_batch(monkeypatch) -> None:
