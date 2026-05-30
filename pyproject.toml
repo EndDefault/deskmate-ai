@@ -9,7 +9,9 @@ description = "Desktop AI assistant for document summaries, site launching, and 
 requires-python = ">=3.11"
 dependencies = [
     "customtkinter==5.2.2",
+    "Pillow==10.4.0",
     "pypdf==4.3.1",
+    "pytesseract==0.3.13",
     "pyttsx3==2.90",
 ]
 
