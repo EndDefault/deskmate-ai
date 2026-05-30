@@ -33,3 +33,26 @@ class KeywordCache:
     content: str
     created_at: str
     updated_at: str
+
+
+@dataclass(frozen=True)
+class TranslationCacheGroup:
+    id: int
+    name: str
+    source_language: str
+    target_language: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class TranslationTerm:
+    id: int
+    group_id: int
+    source_language: str
+    target_language: str
+    source_text: str
+    translated_text: str
+    note: str
+    created_at: str
+    updated_at: str

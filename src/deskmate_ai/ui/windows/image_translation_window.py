@@ -11,9 +11,10 @@ from deskmate_ai.services.image_translation_service import (
     collect_image_paths,
     run_image_translation,
 )
-from deskmate_ai.services.storage_service import list_keyword_cache_categories
+from deskmate_ai.services.storage_service import list_translation_cache_groups
 from deskmate_ai.ui.constants import SOURCE_LANGUAGES, TARGET_LANGUAGES
 from deskmate_ai.ui.windows.base_window import BaseWindow
+from deskmate_ai.ui.windows.translation_cache_window import TranslationCacheWindow
 
 
 class ImageTranslationWindow(BaseWindow):
@@ -81,6 +82,9 @@ class ImageTranslationWindow(BaseWindow):
         )
         self.cache_group_menu = ctk.CTkOptionMenu(cache_frame, values=self._cache_category_names())
         self.cache_group_menu.grid(row=0, column=1, padx=8, pady=8, sticky="ew")
+        ctk.CTkButton(cache_frame, text="번역용 캐시 보기", command=self.show_translation_cache).grid(
+            row=0, column=2, padx=(0, 8), pady=8, sticky="e"
+        )
 
         self.progress = ctk.CTkProgressBar(self.container)
         self.progress.set(0)
@@ -140,6 +144,10 @@ class ImageTranslationWindow(BaseWindow):
         self.selected_images = collect_image_paths(self.selected_sources)
         self.source_label.configure(text=f"선택한 이미지: {len(self.selected_images)}개")
 
+    def show_translation_cache(self) -> None:
+        window = TranslationCacheWindow(self, on_change=self._refresh_cache_groups)
+        window.focus()
+
     def _settings(self) -> ImageTranslationSettings:
         return ImageTranslationSettings(
             source_language=SOURCE_LANGUAGES[self.source_language_menu.get()],
@@ -153,5 +161,11 @@ class ImageTranslationWindow(BaseWindow):
         )
 
     def _cache_category_names(self) -> list[str]:
-        names = [category.name for category in list_keyword_cache_categories()]
+        names = [group.name for group in list_translation_cache_groups()]
         return names or ["기본 캐시"]
+
+    def _refresh_cache_groups(self) -> None:
+        names = self._cache_category_names()
+        self.cache_group_menu.configure(values=names)
+        if self.cache_group_menu.get() not in names:
+            self.cache_group_menu.set(names[0])

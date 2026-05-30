@@ -79,6 +79,29 @@ def initialize_database(*, config: AppConfig = DEFAULT_CONFIG) -> Path:
                 FOREIGN KEY(category_id) REFERENCES keyword_cache_categories(id) ON DELETE CASCADE,
                 UNIQUE(category_id, source_text)
             );
+
+            CREATE TABLE IF NOT EXISTS translation_cache_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                source_language TEXT NOT NULL DEFAULT 'en',
+                target_language TEXT NOT NULL DEFAULT 'ko',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS translation_cache_terms (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL,
+                source_language TEXT NOT NULL,
+                target_language TEXT NOT NULL,
+                source_text TEXT NOT NULL,
+                translated_text TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(group_id) REFERENCES translation_cache_groups(id) ON DELETE CASCADE,
+                UNIQUE(group_id, source_language, target_language, source_text)
+            );
             """
         )
         _ensure_column(connection, "response_cache", "prompt_hash", "TEXT")
@@ -86,6 +109,7 @@ def initialize_database(*, config: AppConfig = DEFAULT_CONFIG) -> Path:
         _ensure_column(connection, "response_cache", "options_hash", "TEXT")
         _ensure_column(connection, "response_cache", "expires_at", "TEXT")
         _ensure_default_keyword_cache_categories(connection)
+        _ensure_default_translation_cache_groups(connection)
         _ensure_column(connection, "keyword_cache", "category_id", "INTEGER NOT NULL DEFAULT 1")
         _ensure_column(connection, "keyword_cache", "action_type", "TEXT NOT NULL DEFAULT 'show_text'")
 
@@ -109,6 +133,19 @@ def _ensure_default_keyword_cache_categories(connection: sqlite3.Connection) -> 
         """,
         (1, "湲곕낯 罹먯떆", now, now),
     )
+
+
+def _ensure_default_translation_cache_groups(connection: sqlite3.Connection) -> None:
+    now = utc_now()
+    for name in ("기본 번역 캐시", "만화 상황 캐시"):
+        connection.execute(
+            """
+            INSERT INTO translation_cache_groups(name, source_language, target_language, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(name) DO NOTHING
+            """,
+            (name, "en", "ko", now, now),
+        )
     connection.execute(
         """
         INSERT INTO keyword_cache_categories(name, created_at, updated_at)

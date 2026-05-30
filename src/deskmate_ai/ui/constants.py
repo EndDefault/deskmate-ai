@@ -15,3 +15,4 @@ TARGET_LANGUAGES = {
     "영어": "en",
     "일본어": "ja",
 }
+LANGUAGE_NAMES = {value: key for key, value in {**SOURCE_LANGUAGES, **TARGET_LANGUAGES}.items()}

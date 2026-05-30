@@ -12,15 +12,18 @@ from deskmate_ai.services.storage_service import (
     get_keyword_cache_category,
     get_profile_value,
     get_similar_cached_response,
+    get_translation_cache_group,
     initialize_database,
     list_keyword_cache_categories,
     list_recent_memos,
     list_translation_cache_groups,
+    list_translation_terms,
     save_cached_response,
     save_document_summary,
     save_keyword_cache,
     save_keyword_cache_category,
     save_translation_cache_group,
+    save_translation_term,
     set_profile_value,
 )
 
@@ -180,7 +183,7 @@ def test_translation_cache_group_default_exists(tmp_path: Path) -> None:
 
     groups = list_translation_cache_groups(config=config)
 
-    assert any(group.name == "일본어 캐시" for group in groups)
+    assert any(group.name == "기본 번역 캐시" for group in groups)
 
 
 def test_translation_cache_group_round_trip(tmp_path: Path) -> None:
@@ -190,3 +193,25 @@ def test_translation_cache_group_round_trip(tmp_path: Path) -> None:
     groups = list_translation_cache_groups(config=config)
 
     assert saved in groups
+    assert get_translation_cache_group(saved.id, config=config) == saved
+    assert saved.source_language == "zh"
+    assert saved.target_language == "ko"
+
+
+def test_translation_terms_can_filter_by_language(tmp_path: Path) -> None:
+    config = AppConfig(database_path=tmp_path / "deskmate.db")
+    group = save_translation_cache_group("게임 UI", "en", "ko", config=config)
+    saved = save_translation_term(
+        group.id,
+        "en",
+        "ko",
+        "Start Game",
+        "게임 시작",
+        note="title button",
+        config=config,
+    )
+    save_translation_term(group.id, "ja", "ko", "開始", "시작", config=config)
+
+    terms = list_translation_terms(group_id=group.id, source_language="en", target_language="ko", config=config)
+
+    assert terms == [saved]

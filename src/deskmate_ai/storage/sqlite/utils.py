@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from hashlib import sha256
 
-from deskmate_ai.storage.models import KeywordCache, KeywordCacheCategory
+from deskmate_ai.storage.models import KeywordCache, KeywordCacheCategory, TranslationCacheGroup, TranslationTerm
 
 
 def normalize_prompt(prompt: str) -> str:
@@ -44,6 +44,31 @@ def keyword_cache_from_row(row: sqlite3.Row) -> KeywordCache:
         keyword=str(row["keyword"]),
         action_type=str(row["action_type"]),
         content=str(row["content"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def translation_cache_group_from_row(row: sqlite3.Row) -> TranslationCacheGroup:
+    return TranslationCacheGroup(
+        id=int(row["id"]),
+        name=str(row["name"]),
+        source_language=str(row["source_language"]),
+        target_language=str(row["target_language"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def translation_term_from_row(row: sqlite3.Row) -> TranslationTerm:
+    return TranslationTerm(
+        id=int(row["id"]),
+        group_id=int(row["group_id"]),
+        source_language=str(row["source_language"]),
+        target_language=str(row["target_language"]),
+        source_text=str(row["source_text"]),
+        translated_text=str(row["translated_text"]),
+        note=str(row["note"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )

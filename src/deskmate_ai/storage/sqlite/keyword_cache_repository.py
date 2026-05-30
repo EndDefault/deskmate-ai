@@ -255,17 +255,3 @@ def delete_keyword_cache(cache_id: int, *, config: AppConfig = DEFAULT_CONFIG) -
         cursor = connection.execute("DELETE FROM keyword_cache WHERE id = ?", (cache_id,))
     return cursor.rowcount > 0
 
-
-def list_translation_cache_groups(*, config: AppConfig = DEFAULT_CONFIG) -> list[KeywordCacheCategory]:
-    return list_keyword_cache_categories(config=config)
-
-
-def save_translation_cache_group(
-    name: str,
-    source_language: str,
-    target_language: str,
-    *,
-    group_id: int | None = None,
-    config: AppConfig = DEFAULT_CONFIG,
-) -> KeywordCacheCategory:
-    return save_keyword_cache_category(name, category_id=group_id, config=config)
