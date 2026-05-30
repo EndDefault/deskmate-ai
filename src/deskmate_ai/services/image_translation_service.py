@@ -26,7 +26,7 @@ class ImageTranslationSettings:
     enhance_contrast: bool
     grayscale: bool
     min_confidence: float
-    cache_group_name: str
+    cache_group_names: list[str]
     output_dir: Path | None = None
 
 
@@ -169,7 +169,7 @@ def run_image_translation_preview(
             current,
             total,
             "번역",
-            f"{image_path.name}: {settings.source_language}->{settings.target_language}, {settings.cache_group_name}",
+            f"{image_path.name}: {settings.source_language}->{settings.target_language}, {', '.join(settings.cache_group_names)}",
         )
 
         current += 1

@@ -35,7 +35,7 @@ def test_run_image_translation_preview_reports_progress(tmp_path: Path) -> None:
         enhance_contrast=True,
         grayscale=True,
         min_confidence=0.55,
-        cache_group_name="일본어 캐시",
+        cache_group_names=["일본어 캐시"],
     )
 
     progress = list(run_image_translation_preview([image], settings))
@@ -57,7 +57,7 @@ def test_run_image_translation_saves_output_with_mocked_pipeline(tmp_path: Path,
         enhance_contrast=False,
         grayscale=False,
         min_confidence=0.55,
-        cache_group_name="영어 캐시",
+        cache_group_names=["영어 캐시"],
         output_dir=tmp_path / "translated",
     )
 
