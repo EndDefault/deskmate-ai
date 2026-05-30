@@ -459,9 +459,9 @@ def _translation_cache_map(settings: ImageTranslationSettings, *, config: AppCon
     return translations
 
 
-def _format_translation_hints(texts: list[str], cache: dict[str, str], *, limit: int = 12) -> str:
+def _translation_hints(texts: list[str], cache: dict[str, str], *, limit: int = 12) -> list[tuple[str, str]]:
     if not cache:
-        return ""
+        return []
 
     hints: list[tuple[str, str]] = []
     seen: set[str] = set()
@@ -474,6 +474,11 @@ def _format_translation_hints(texts: list[str], cache: dict[str, str], *, limit:
             seen.add(source_text)
         if len(hints) >= limit:
             break
+    return hints
+
+
+def _format_translation_hints(texts: list[str], cache: dict[str, str], *, limit: int = 12) -> str:
+    hints = _translation_hints(texts, cache, limit=limit)
     return "\n".join(f"- {source} = {translated}" for source, translated in hints)
 
 
@@ -483,6 +488,17 @@ def _cache_hint_applies(source_text: str, normalized_text: str) -> bool:
     if len(source_text) < 3:
         return False
     return source_text in normalized_text
+
+
+def _apply_cache_hint_replacements(text: str, cache: dict[str, str]) -> str:
+    result = text
+    for source_text, translated_text in _translation_hints([text], cache, limit=24):
+        result = re.sub(re.escape(source_text), translated_text, result, flags=re.IGNORECASE)
+    return result
+
+
+def _translation_is_unchanged(source_text: str, translated_text: str) -> bool:
+    return _normalize_translation_text(source_text) == _normalize_translation_text(translated_text)
 
 
 def _translate_texts(
@@ -529,6 +545,8 @@ def _translate_texts(
     for index, source_text in enumerate(texts, start=1):
         translated_text = parsed.get(index)
         if translated_text:
+            if _translation_is_unchanged(source_text, translated_text):
+                translated_text = _apply_cache_hint_replacements(source_text, cache or {})
             results.append(translated_text)
             continue
         results.append(_translate_text(source_text, settings, config=config, cache=cache))
@@ -563,6 +581,11 @@ def _translate_text(
         f"{hint_instruction}"
     )
     translated = ask_local_model(prompt, config=config)
+    if translated and not _translation_is_unchanged(text, translated):
+        return translated
+    cache_replacement = _apply_cache_hint_replacements(text, cache or {})
+    if not _translation_is_unchanged(text, cache_replacement):
+        return cache_replacement
     return translated or text
 
 

@@ -194,6 +194,47 @@ def test_translate_text_uses_partial_cache_as_prompt_hints(monkeypatch) -> None:
     assert "- near a bench = 벤치 근처" in captured["prompt"]
 
 
+def test_translate_text_falls_back_to_cache_replacement_when_model_returns_source(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service,
+        "ask_local_model",
+        lambda *_args, **_kwargs: "Around 10 PM, at the back of Sakura Park, near a bench.",
+    )
+
+    result = service._translate_text(
+        "Around 10 PM, at the back of Sakura Park, near a bench.",
+        make_settings(),
+        config=object(),
+        cache={
+            "around 10 pm": "밤 10시쯤",
+            "at the back of": "뒤편",
+            "near a bench": "벤치 근처",
+        },
+    )
+
+    assert result == "밤 10시쯤, 뒤편 Sakura Park, 벤치 근처."
+
+
+def test_translate_text_falls_back_to_cache_replacement_for_short_phrases(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service,
+        "ask_local_model",
+        lambda *_args, **_kwargs: "thank you. head over around",
+    )
+
+    result = service._translate_text(
+        "thank you. head over around",
+        make_settings(),
+        config=object(),
+        cache={
+            "thank you": "고마워",
+            "head over": "이동해",
+        },
+    )
+
+    assert result == "고마워. 이동해 around"
+
+
 def test_translate_texts_parses_pipe_numbered_batch(monkeypatch) -> None:
     monkeypatch.setattr(service, "ask_local_model", lambda *_args, **_kwargs: "1|안녕하세요\n2|좋은 저녁입니다")
 
