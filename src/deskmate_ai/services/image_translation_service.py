@@ -409,7 +409,7 @@ def _translate_boxes(
     cache = _translation_cache_map(settings, config=config)
     unique_texts = list(dict.fromkeys(box.text for box in boxes))
     missing_texts = [text for text in unique_texts if _normalize_translation_text(text) not in cache]
-    translated_texts = _translate_texts(missing_texts, settings, config=config)
+    translated_texts = _translate_texts(missing_texts, settings, config=config, cache=cache)
     generated = dict(zip(missing_texts, translated_texts, strict=False))
 
     translations: list[tuple[OcrTextBox, str]] = []
@@ -459,11 +459,43 @@ def _translation_cache_map(settings: ImageTranslationSettings, *, config: AppCon
     return translations
 
 
-def _translate_texts(texts: list[str], settings: ImageTranslationSettings, *, config: AppConfig) -> list[str]:
+def _format_translation_hints(texts: list[str], cache: dict[str, str], *, limit: int = 12) -> str:
+    if not cache:
+        return ""
+
+    hints: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    normalized_texts = [_normalize_translation_text(text) for text in texts]
+    for source_text, translated_text in sorted(cache.items(), key=lambda item: len(item[0]), reverse=True):
+        if source_text in seen:
+            continue
+        if any(_cache_hint_applies(source_text, normalized_text) for normalized_text in normalized_texts):
+            hints.append((source_text, translated_text))
+            seen.add(source_text)
+        if len(hints) >= limit:
+            break
+    return "\n".join(f"- {source} = {translated}" for source, translated in hints)
+
+
+def _cache_hint_applies(source_text: str, normalized_text: str) -> bool:
+    if not source_text or source_text == normalized_text:
+        return False
+    if len(source_text) < 3:
+        return False
+    return source_text in normalized_text
+
+
+def _translate_texts(
+    texts: list[str],
+    settings: ImageTranslationSettings,
+    *,
+    config: AppConfig,
+    cache: dict[str, str] | None = None,
+) -> list[str]:
     if not texts:
         return []
     if len(texts) == 1:
-        return [_translate_text(texts[0], settings, config=config)]
+        return [_translate_text(texts[0], settings, config=config, cache=cache)]
 
     if settings.translation_provider == "deepl":
         deepl_translations = _translate_texts_with_deepl(texts, settings, config=config)
@@ -473,21 +505,25 @@ def _translate_texts(texts: list[str], settings: ImageTranslationSettings, *, co
     source_language = _language_label(settings.source_language)
     target_language = _language_label(settings.target_language)
     numbered_lines = "\n".join(f"{index + 1}|{text}" for index, text in enumerate(texts))
+    hints = _format_translation_hints(texts, cache or {})
+    hint_instruction = f"\n\nTranslation hints from cache:\n{hints}" if hints else ""
     prompt = (
         f"Translate each numbered item from {source_language} into {target_language}. "
         f"You MUST write the translated natural-language text in {target_language}. "
         f"The selected target language is {target_language}, not English. "
         f"{_target_language_output_rule(settings.target_language)} "
+        "If translation hints are provided, reflect them naturally in the matching sentence. "
         "Return exactly one line per input in this format: number|translated text. "
         "Keep names, IDs, numbers, and symbols as needed, but translate natural-language sentences. "
         "If text is explicit or adult, translate it neutrally without censoring. "
         "Do not add explanations.\n\n"
         f"{numbered_lines}"
+        f"{hint_instruction}"
     )
     translated = ask_local_model(prompt, config=config)
     parsed = _parse_numbered_translation_map(translated or "")
     if not parsed:
-        return [_translate_text(text, settings, config=config) for text in texts]
+        return [_translate_text(text, settings, config=config, cache=cache) for text in texts]
 
     results: list[str] = []
     for index, source_text in enumerate(texts, start=1):
@@ -495,11 +531,17 @@ def _translate_texts(texts: list[str], settings: ImageTranslationSettings, *, co
         if translated_text:
             results.append(translated_text)
             continue
-        results.append(_translate_text(source_text, settings, config=config))
+        results.append(_translate_text(source_text, settings, config=config, cache=cache))
     return results
 
 
-def _translate_text(text: str, settings: ImageTranslationSettings, *, config: AppConfig) -> str:
+def _translate_text(
+    text: str,
+    settings: ImageTranslationSettings,
+    *,
+    config: AppConfig,
+    cache: dict[str, str] | None = None,
+) -> str:
     if settings.source_language == settings.target_language:
         return text
     if settings.translation_provider == "deepl":
@@ -508,13 +550,17 @@ def _translate_text(text: str, settings: ImageTranslationSettings, *, config: Ap
             return translated_texts[0]
     source_language = _language_label(settings.source_language)
     target_language = _language_label(settings.target_language)
+    hints = _format_translation_hints([text], cache or {})
+    hint_instruction = f"\n\nTranslation hints from cache:\n{hints}" if hints else ""
     prompt = (
         f"Translate the following text from {source_language} into {target_language}. "
         f"You MUST write the translated natural-language text in {target_language}. "
         f"The selected target language is {target_language}, not English. "
         f"{_target_language_output_rule(settings.target_language)} "
+        "If translation hints are provided, reflect them naturally in the translation. "
         "Return only the translated text, with no explanation.\n\n"
         f"{text}"
+        f"{hint_instruction}"
     )
     translated = ask_local_model(prompt, config=config)
     return translated or text

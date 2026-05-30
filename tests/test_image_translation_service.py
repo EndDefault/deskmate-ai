@@ -167,6 +167,33 @@ def test_translate_boxes_uses_translation_cache_before_model(monkeypatch) -> Non
     assert result[0][1] == "고마워. 근처로 와."
 
 
+def test_translate_text_uses_partial_cache_as_prompt_hints(monkeypatch) -> None:
+    captured = {}
+
+    def fake_model(prompt, **_kwargs):
+        captured["prompt"] = prompt
+        return "밤 10시쯤, 공원 뒤편 벤치 근처."
+
+    monkeypatch.setattr(service, "ask_local_model", fake_model)
+
+    result = service._translate_text(
+        "Around 10 PM, at the back of Sakura Park, near a bench.",
+        make_settings(),
+        config=object(),
+        cache={
+            "around 10 pm": "밤 10시쯤",
+            "at the back of": "뒤편",
+            "near a bench": "벤치 근처",
+        },
+    )
+
+    assert result == "밤 10시쯤, 공원 뒤편 벤치 근처."
+    assert "Translation hints from cache" in captured["prompt"]
+    assert "- around 10 pm = 밤 10시쯤" in captured["prompt"]
+    assert "- at the back of = 뒤편" in captured["prompt"]
+    assert "- near a bench = 벤치 근처" in captured["prompt"]
+
+
 def test_translate_texts_parses_pipe_numbered_batch(monkeypatch) -> None:
     monkeypatch.setattr(service, "ask_local_model", lambda *_args, **_kwargs: "1|안녕하세요\n2|좋은 저녁입니다")
 
