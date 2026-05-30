@@ -113,3 +113,19 @@ def test_translate_texts_falls_back_to_individual_when_batch_is_empty(monkeypatc
     result = service._translate_texts(["Hello", "Good evening"], make_settings(), config=object())
 
     assert result == ["개별 번역: Hello", "개별 번역: Good evening"]
+
+
+def test_translate_text_prompt_uses_selected_target_language(monkeypatch) -> None:
+    captured = {}
+
+    def fake_model(prompt, **_kwargs):
+        captured["prompt"] = prompt
+        return "안녕하세요"
+
+    monkeypatch.setattr(service, "ask_local_model", fake_model)
+
+    result = service._translate_text("Hello", make_settings(), config=object())
+
+    assert result == "안녕하세요"
+    assert "into Korean" in captured["prompt"]
+    assert "Korean Hangul" in captured["prompt"]
