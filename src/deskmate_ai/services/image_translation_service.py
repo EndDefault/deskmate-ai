@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import re
+import shutil
 import textwrap
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
+from urllib import error, parse, request
+import json
 
 from deskmate_ai.config import DEFAULT_CONFIG, AppConfig
 from deskmate_ai.services.ai import ask_local_model
@@ -30,6 +33,7 @@ class ImageTranslationSettings:
     min_confidence: float
     cache_group_names: list[str]
     output_dir: Path | None = None
+    translation_provider: str = "local"
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,22 @@ class OcrTextBox:
     confidence: float
 
 
+@dataclass(frozen=True)
+class OcrReviewResult:
+    image_path: Path
+    image: object
+    boxes: list[OcrTextBox]
+    preview_path: Path
+
+
+@dataclass(frozen=True)
+class TranslationReviewResult:
+    image_path: Path
+    preview_path: Path
+    final_path: Path
+    translations: list[tuple[OcrTextBox, str]]
+
+
 def collect_image_paths(paths: Iterable[str | Path]) -> list[Path]:
     images: list[Path] = []
     for raw_path in paths:
@@ -77,6 +97,62 @@ def estimate_total_steps(image_count: int, settings: ImageTranslationSettings) -
         return 0
     per_image_steps = 2 + max(1, settings.ocr_passes) + 2
     return image_count * per_image_steps
+
+
+def prepare_ocr_review(image_path: Path, settings: ImageTranslationSettings) -> OcrReviewResult:
+    working_image = _load_and_preprocess_image(image_path, settings)
+    text_boxes = _extract_text_boxes(working_image, settings)
+    preview_path = _render_ocr_review_image(image_path, working_image, text_boxes, settings)
+    return OcrReviewResult(image_path=image_path, image=working_image, boxes=text_boxes, preview_path=preview_path)
+
+
+def prepare_translation_review(
+    review: OcrReviewResult,
+    settings: ImageTranslationSettings,
+    *,
+    config: AppConfig = DEFAULT_CONFIG,
+) -> TranslationReviewResult:
+    translations = _translate_boxes(review.boxes, settings, config=config)
+    preview_path = _render_translated_image(
+        review.image_path,
+        review.image,
+        translations,
+        settings,
+        suffix="_translation_review",
+    )
+    final_path = _output_path(review.image_path, settings, suffix="_translated")
+    return TranslationReviewResult(
+        image_path=review.image_path,
+        preview_path=preview_path,
+        final_path=final_path,
+        translations=translations,
+    )
+
+
+def approve_translation_review(review: TranslationReviewResult) -> Path:
+    review.final_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(review.preview_path, review.final_path)
+    return review.final_path
+
+
+def format_ocr_review_text(boxes: list[OcrTextBox]) -> str:
+    if not boxes:
+        return "OCR로 감지한 텍스트가 없습니다."
+    lines: list[str] = []
+    for index, box in enumerate(boxes, start=1):
+        lines.append(
+            f"{index}. [{box.confidence:.0%}] ({box.left}, {box.top}, {box.width}x{box.height}) {box.text}"
+        )
+    return "\n".join(lines)
+
+
+def format_translation_review_text(translations: list[tuple[OcrTextBox, str]]) -> str:
+    if not translations:
+        return "번역할 텍스트가 없습니다."
+    lines: list[str] = []
+    for index, (box, translated_text) in enumerate(translations, start=1):
+        lines.append(f"{index}. 원문: {box.text}\n   번역: {translated_text}")
+    return "\n".join(lines)
 
 
 def run_image_translation(
@@ -301,6 +377,11 @@ def _translate_texts(texts: list[str], settings: ImageTranslationSettings, *, co
     if len(texts) == 1:
         return [_translate_text(texts[0], settings, config=config)]
 
+    if settings.translation_provider == "deepl":
+        deepl_translations = _translate_texts_with_deepl(texts, settings, config=config)
+        if deepl_translations:
+            return deepl_translations
+
     numbered_lines = "\n".join(f"{index + 1}|{text}" for index, text in enumerate(texts))
     prompt = (
         "Translate each numbered item. "
@@ -330,6 +411,10 @@ def _translate_texts(texts: list[str], settings: ImageTranslationSettings, *, co
 def _translate_text(text: str, settings: ImageTranslationSettings, *, config: AppConfig) -> str:
     if settings.source_language == settings.target_language:
         return text
+    if settings.translation_provider == "deepl":
+        translated_texts = _translate_texts_with_deepl([text], settings, config=config)
+        if translated_texts:
+            return translated_texts[0]
     prompt = (
         "Translate the following text. "
         f"Source language: {settings.source_language}. "
@@ -339,6 +424,54 @@ def _translate_text(text: str, settings: ImageTranslationSettings, *, config: Ap
     )
     translated = ask_local_model(prompt, config=config)
     return translated or text
+
+
+def _translate_texts_with_deepl(
+    texts: list[str],
+    settings: ImageTranslationSettings,
+    *,
+    config: AppConfig,
+) -> list[str] | None:
+    api_key = config.deepl_api_key.strip()
+    if not api_key or not api_key.endswith(":fx"):
+        return None
+
+    source_language = _deepl_language(settings.source_language)
+    target_language = _deepl_language(settings.target_language)
+    if not source_language or not target_language:
+        return None
+
+    payload_pairs = [
+        ("auth_key", api_key),
+        ("source_lang", source_language),
+        ("target_lang", target_language),
+    ]
+    payload_pairs.extend(("text", text) for text in texts)
+    payload = parse.urlencode(payload_pairs).encode("utf-8")
+    req = request.Request(
+        config.deepl_api_url,
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=config.deepl_timeout_seconds) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except (OSError, error.URLError, error.HTTPError, json.JSONDecodeError):
+        return None
+
+    translations = data.get("translations", [])
+    if len(translations) != len(texts):
+        return None
+    return [str(item.get("text", source)).strip() or source for item, source in zip(translations, texts, strict=False)]
+
+
+def _deepl_language(language: str) -> str | None:
+    return {
+        "en": "EN",
+        "ja": "JA",
+        "ko": "KO",
+    }.get(language)
 
 
 def _parse_numbered_translations(response: str, *, expected_count: int) -> list[str]:
@@ -395,6 +528,8 @@ def _render_translated_image(
     image,
     translations: list[tuple[OcrTextBox, str]],
     settings: ImageTranslationSettings,
+    *,
+    suffix: str = "_translated",
 ) -> Path:
     try:
         from PIL import ImageDraw
@@ -414,11 +549,42 @@ def _render_translated_image(
         wrapped = _wrap_text_for_width(translated_text, max(1, right - left - padding * 2), font)
         draw.multiline_text((left + padding, top + padding), wrapped, fill="black", font=font, spacing=2)
 
-    output_dir = settings.output_dir or image_path.parent / "translated"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{image_path.stem}_translated.png"
+    output_path = _output_path(image_path, settings, suffix=suffix)
     output.save(output_path)
     return output_path
+
+
+def _render_ocr_review_image(
+    image_path: Path,
+    image,
+    boxes: list[OcrTextBox],
+    settings: ImageTranslationSettings,
+) -> Path:
+    try:
+        from PIL import ImageDraw
+    except ImportError as exc:
+        raise RuntimeError("Pillow가 설치되어 있지 않습니다. pip install -e . 명령으로 의존성을 다시 설치해 주세요.") from exc
+
+    output = image.copy()
+    draw = ImageDraw.Draw(output)
+    for box in boxes:
+        padding = 4
+        left = max(0, box.left - padding)
+        top = max(0, box.top - padding)
+        right = min(output.width, box.left + box.width + padding)
+        bottom = min(output.height, box.top + box.height + padding)
+        for offset in range(3):
+            draw.rectangle((left - offset, top - offset, right + offset, bottom + offset), outline="white")
+
+    output_path = _output_path(image_path, settings, suffix="_ocr_review")
+    output.save(output_path)
+    return output_path
+
+
+def _output_path(image_path: Path, settings: ImageTranslationSettings, *, suffix: str) -> Path:
+    output_dir = settings.output_dir or image_path.parent / "translated"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir / f"{image_path.stem}{suffix}.png"
 
 
 def _load_translation_font(size: int):

@@ -13,6 +13,9 @@ class AppConfig:
     ollama_timeout_seconds: float = float(os.getenv("DESKMATE_OLLAMA_TIMEOUT_SECONDS", "15"))
     ollama_keep_alive: str = os.getenv("DESKMATE_OLLAMA_KEEP_ALIVE", "10m")
     ollama_max_tokens: int = int(os.getenv("DESKMATE_OLLAMA_MAX_TOKENS", "512"))
+    deepl_api_key: str = os.getenv("DESKMATE_DEEPL_API_KEY", "")
+    deepl_api_url: str = os.getenv("DESKMATE_DEEPL_API_URL", "https://api-free.deepl.com/v2/translate")
+    deepl_timeout_seconds: float = float(os.getenv("DESKMATE_DEEPL_TIMEOUT_SECONDS", "20"))
     document_preview_chars: int = int(os.getenv("DESKMATE_DOCUMENT_PREVIEW_CHARS", "1200"))
     data_dir: Path = Path(os.getenv("DESKMATE_DATA_DIR", Path.home() / ".deskmate_ai"))
     database_path: Path | None = None

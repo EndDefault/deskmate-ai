@@ -5,11 +5,18 @@ from threading import Event, Thread
 from tkinter import filedialog
 
 import customtkinter as ctk
+from PIL import Image
 
 from deskmate_ai.services.image_translation_service import (
     ImageTranslationSettings,
+    OcrReviewResult,
+    TranslationReviewResult,
+    approve_translation_review,
     collect_image_paths,
-    run_image_translation,
+    format_ocr_review_text,
+    format_translation_review_text,
+    prepare_ocr_review,
+    prepare_translation_review,
 )
 from deskmate_ai.services.storage_service import list_translation_cache_groups
 from deskmate_ai.ui.constants import SOURCE_LANGUAGES, TARGET_LANGUAGES
@@ -28,6 +35,12 @@ class ImageTranslationWindow(BaseWindow):
         self.selected_images: list[Path] = []
         self.cancel_event = Event()
         self.is_running = False
+        self.current_index = 0
+        self.current_stage = "idle"
+        self.current_settings: ImageTranslationSettings | None = None
+        self.current_ocr_review: OcrReviewResult | None = None
+        self.current_translation_review: TranslationReviewResult | None = None
+        self.preview_image = None
         self._build()
 
     def _build(self) -> None:
@@ -58,6 +71,11 @@ class ImageTranslationWindow(BaseWindow):
         self.target_language_menu = ctk.CTkOptionMenu(settings, values=list(TARGET_LANGUAGES.keys()))
         self.target_language_menu.set("한국어")
         self.target_language_menu.grid(row=0, column=3, padx=8, pady=(8, 4), sticky="ew")
+
+        ctk.CTkLabel(settings, text="번역 엔진", anchor="w").grid(row=4, column=0, padx=8, pady=(4, 8), sticky="w")
+        self.translation_provider_menu = ctk.CTkOptionMenu(settings, values=["로컬 AI", "DeepL 무료 API"])
+        self.translation_provider_menu.set("로컬 AI")
+        self.translation_provider_menu.grid(row=4, column=1, columnspan=3, padx=8, pady=(4, 8), sticky="ew")
 
         ctk.CTkLabel(settings, text="OCR 반복").grid(row=1, column=0, padx=8, pady=4, sticky="w")
         self.ocr_passes = ctk.CTkOptionMenu(settings, values=["1", "2", "3", "4", "5"])
@@ -122,11 +140,30 @@ class ImageTranslationWindow(BaseWindow):
         self.progress.pack(fill="x", pady=(0, 8))
         self.status_label = ctk.CTkLabel(self.container, text="대기 중", anchor="w")
         self.status_label.pack(fill="x", pady=(0, 8))
+
+        review_frame = ctk.CTkFrame(self.container)
+        review_frame.pack(fill="both", expand=True, pady=(0, 12))
+        review_frame.grid_columnconfigure(0, weight=3)
+        review_frame.grid_columnconfigure(1, weight=2)
+        review_frame.grid_rowconfigure(0, weight=1)
+
+        self.preview_label = ctk.CTkLabel(review_frame, text="검수할 이미지를 선택해 주세요.", anchor="center")
+        self.preview_label.grid(row=0, column=0, padx=8, pady=8, sticky="nsew")
+
+        self.review_text = ctk.CTkTextbox(review_frame, wrap="word", height=260)
+        self.review_text.grid(row=0, column=1, padx=(0, 8), pady=8, sticky="nsew")
+        self.review_text.insert("end", "OCR 검수 단계에서 인식된 원문이 여기에 표시됩니다.")
+        self.review_text.configure(state="disabled")
+
         self.log = ctk.CTkTextbox(self.container, wrap="word", height=220)
-        self.log.pack(fill="both", expand=True, pady=(0, 12))
+        self.log.pack(fill="x", pady=(0, 12))
 
         actions = ctk.CTkFrame(self.container, fg_color="transparent")
         actions.pack(fill="x")
+        self.reject_button = ctk.CTkButton(actions, text="불통과", state="disabled", fg_color="#b91c1c", command=self.reject_current_stage)
+        self.reject_button.pack(side="left")
+        self.approve_button = ctk.CTkButton(actions, text="통과", state="disabled", command=self.approve_current_stage)
+        self.approve_button.pack(side="left", padx=(8, 0))
         self.cancel_button = ctk.CTkButton(actions, text="강제 종료", state="disabled", command=self.cancel_translation)
         self.cancel_button.pack(side="right")
         self.start_button = ctk.CTkButton(actions, text="시작", command=self.start_translation)
@@ -154,25 +191,112 @@ class ImageTranslationWindow(BaseWindow):
         if not self.selected_images:
             self.status_label.configure(text="처리할 이미지를 선택해 주세요.")
             return
-        if not self._selected_cache_group_names():
-            self.status_label.configure(text="원문 언어에 맞는 번역 캐시를 먼저 만들어 주세요.")
-            return
 
         self.is_running = True
         self.cancel_event.clear()
+        self.current_index = 0
+        self.current_settings = self._settings()
+        self.current_ocr_review = None
+        self.current_translation_review = None
+        self.current_stage = "ocr"
         self.start_button.configure(state="disabled", text="실행 중")
         self.cancel_button.configure(state="normal", text="강제 종료")
+        self.approve_button.configure(state="disabled")
+        self.reject_button.configure(state="disabled")
         self.log.delete("1.0", "end")
-        Thread(target=self._run_translation, args=(self._settings(),), daemon=True).start()
+        self._start_ocr_stage()
 
-    def _run_translation(self, settings: ImageTranslationSettings) -> None:
-        for progress in run_image_translation(
-            self.selected_images,
-            settings,
-            should_cancel=self.cancel_event.is_set,
-        ):
-            self.after(0, self._update_progress, progress.ratio, f"{progress.stage}: {progress.message}")
-        self.after(0, self._finish_translation)
+    def _start_ocr_stage(self) -> None:
+        if self.cancel_event.is_set() or self.current_settings is None:
+            self._finish_translation("작업 중단")
+            return
+        if self.current_index >= len(self.selected_images):
+            self._finish_translation("모든 이미지 작업 완료")
+            return
+        image_path = self.selected_images[self.current_index]
+        self.current_stage = "ocr_loading"
+        self._set_review_buttons(False)
+        self._update_progress(self.current_index / max(1, len(self.selected_images)), f"OCR 준비: {image_path.name}")
+        Thread(target=self._run_ocr_stage, args=(image_path, self.current_settings), daemon=True).start()
+
+    def _run_ocr_stage(self, image_path: Path, settings: ImageTranslationSettings) -> None:
+        try:
+            review = prepare_ocr_review(image_path, settings)
+        except RuntimeError as exc:
+            self.after(0, self._stage_failed, f"OCR 오류: {exc}")
+            return
+        self.after(0, self._show_ocr_review, review)
+
+    def _show_ocr_review(self, review: OcrReviewResult) -> None:
+        self.current_stage = "ocr_review"
+        self.current_ocr_review = review
+        self.current_translation_review = None
+        self._show_preview_image(review.preview_path)
+        self._set_review_text(format_ocr_review_text(review.boxes))
+        self._set_review_buttons(True)
+        self._update_progress(
+            (self.current_index + 0.35) / max(1, len(self.selected_images)),
+            f"OCR 검수 대기: {review.image_path.name} / {len(review.boxes)}개 감지",
+        )
+
+    def _start_translation_stage(self) -> None:
+        if self.cancel_event.is_set() or self.current_settings is None or self.current_ocr_review is None:
+            self._finish_translation("작업 중단")
+            return
+        self.current_stage = "translation_loading"
+        self._set_review_buttons(False)
+        self._update_progress(
+            (self.current_index + 0.55) / max(1, len(self.selected_images)),
+            f"번역 준비: {self.current_ocr_review.image_path.name}",
+        )
+        Thread(
+            target=self._run_translation_stage,
+            args=(self.current_ocr_review, self.current_settings),
+            daemon=True,
+        ).start()
+
+    def _run_translation_stage(self, review: OcrReviewResult, settings: ImageTranslationSettings) -> None:
+        try:
+            translated = prepare_translation_review(review, settings)
+        except RuntimeError as exc:
+            self.after(0, self._stage_failed, f"번역 오류: {exc}")
+            return
+        self.after(0, self._show_translation_review, translated)
+
+    def _show_translation_review(self, review: TranslationReviewResult) -> None:
+        self.current_stage = "translation_review"
+        self.current_translation_review = review
+        self._show_preview_image(review.preview_path)
+        self._set_review_text(format_translation_review_text(review.translations))
+        self._set_review_buttons(True)
+        self._update_progress(
+            (self.current_index + 0.85) / max(1, len(self.selected_images)),
+            f"번역 검수 대기: {review.image_path.name}",
+        )
+
+    def approve_current_stage(self) -> None:
+        if self.current_stage == "ocr_review":
+            self._start_translation_stage()
+            return
+        if self.current_stage == "translation_review" and self.current_translation_review is not None:
+            output_path = approve_translation_review(self.current_translation_review)
+            self._update_progress(
+                (self.current_index + 1) / max(1, len(self.selected_images)),
+                f"결과 저장: {output_path}",
+            )
+            self.current_index += 1
+            self._start_ocr_stage()
+
+    def reject_current_stage(self) -> None:
+        if self.current_stage == "ocr_review":
+            self._finish_translation("OCR 불통과: 설정을 조정하거나 누락 영역을 확인해 주세요.")
+            return
+        if self.current_stage == "translation_review":
+            self._finish_translation("번역 불통과: 번역 결과를 확인해 주세요.")
+
+    def _stage_failed(self, message: str) -> None:
+        self._update_progress(0, message)
+        self._finish_translation(message)
 
     def cancel_translation(self) -> None:
         if not self.is_running:
@@ -187,11 +311,33 @@ class ImageTranslationWindow(BaseWindow):
         self.log.insert("end", message + "\n")
         self.log.see("end")
 
-    def _finish_translation(self) -> None:
+    def _finish_translation(self, message: str = "작업 완료") -> None:
         self.is_running = False
+        self.current_stage = "idle"
         self.start_button.configure(state="normal", text="시작")
         self.cancel_button.configure(state="disabled", text="강제 종료")
-        self.status_label.configure(text="작업 완료")
+        self._set_review_buttons(False)
+        self.status_label.configure(text=message)
+
+    def _set_review_buttons(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        self.approve_button.configure(state=state)
+        self.reject_button.configure(state=state)
+
+    def _set_review_text(self, text: str) -> None:
+        self.review_text.configure(state="normal")
+        self.review_text.delete("1.0", "end")
+        self.review_text.insert("end", text)
+        self.review_text.configure(state="disabled")
+
+    def _show_preview_image(self, image_path: Path) -> None:
+        image = Image.open(image_path)
+        max_width = 420
+        max_height = 420
+        scale = min(max_width / image.width, max_height / image.height, 1)
+        size = (max(1, int(image.width * scale)), max(1, int(image.height * scale)))
+        self.preview_image = ctk.CTkImage(light_image=image, dark_image=image, size=size)
+        self.preview_label.configure(image=self.preview_image, text="")
 
     def _refresh_selected_images(self) -> None:
         self.selected_images = collect_image_paths(self.selected_sources)
@@ -211,7 +357,13 @@ class ImageTranslationWindow(BaseWindow):
             grayscale=self.grayscale_enabled.get(),
             min_confidence=float(self.min_confidence.get()),
             cache_group_names=self._selected_cache_group_names(),
+            translation_provider=self._translation_provider(),
         )
+
+    def _translation_provider(self) -> str:
+        if self.translation_provider_menu.get() == "DeepL 무료 API":
+            return "deepl"
+        return "local"
 
     def _cache_category_names(self) -> list[str]:
         source_language = SOURCE_LANGUAGES[self.source_language_menu.get()]
