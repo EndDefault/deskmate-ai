@@ -20,17 +20,17 @@ from deskmate_ai.ui.windows.base_window import BaseWindow
 
 class CacheManagerWindow(BaseWindow):
     def __init__(self, parent, *, on_change) -> None:
-        super().__init__(parent, title="Cache manager", geometry="640x580")
+        super().__init__(parent, title="캐시 관리", geometry="640x580")
         self.on_change = on_change
         self.show_categories()
 
     def show_categories(self) -> None:
         self.clear()
         self.header(
-            "All caches",
+            "전체 캐시 보기",
             action_button=lambda parent: widgets.primary_button(
                 parent,
-                "Add category",
+                "카테고리 추가",
                 width=theme.BUTTON_WIDTH_LG,
                 command=self.show_category_form,
             ),
@@ -43,10 +43,10 @@ class CacheManagerWindow(BaseWindow):
 
     def show_category_form(self, category: KeywordCacheCategory | None = None) -> None:
         self.clear()
-        self.header("Edit category" if category else "Add category", back_command=self.show_categories)
+        self.header("카테고리 수정" if category else "카테고리 추가", back_command=self.show_categories)
 
-        ctk.CTkLabel(self.container, text="Category name", anchor="w").pack(fill="x", pady=(8, 4))
-        name_entry = ctk.CTkEntry(self.container, placeholder_text="Example: Work cache")
+        ctk.CTkLabel(self.container, text="카테고리 이름", anchor="w").pack(fill="x", pady=(8, 4))
+        name_entry = ctk.CTkEntry(self.container, placeholder_text="예: 업무 캐시")
         name_entry.pack(fill="x", pady=(0, 12))
         if category:
             name_entry.insert(0, category.name)
@@ -55,7 +55,7 @@ class CacheManagerWindow(BaseWindow):
         status_label.pack(fill="x", pady=(0, 8))
         widgets.primary_button(
             self.container,
-            "Save",
+            "저장",
             command=lambda: self._save_category(category, name_entry, status_label),
         ).pack(anchor="e")
 
@@ -71,7 +71,7 @@ class CacheManagerWindow(BaseWindow):
             back_command=self.show_categories,
             action_button=lambda parent: widgets.primary_button(
                 parent,
-                "Add cache",
+                "캐시 추가",
                 width=theme.BUTTON_WIDTH_MD,
                 command=lambda: self.show_cache_form(category.id),
             ),
@@ -79,7 +79,7 @@ class CacheManagerWindow(BaseWindow):
 
         caches = list_keyword_caches(category_id=category.id)
         if not caches:
-            ctk.CTkLabel(self.container, text="No caches in this category.").pack(fill="both", expand=True)
+            ctk.CTkLabel(self.container, text="이 카테고리에 저장된 캐시가 없습니다.").pack(fill="both", expand=True)
             return
 
         list_frame = ctk.CTkScrollableFrame(self.container)
@@ -100,7 +100,7 @@ class CacheManagerWindow(BaseWindow):
             back_command=lambda: self.show_category_detail(cache.category_id),
             action_button=lambda parent: widgets.primary_button(
                 parent,
-                "Edit",
+                "수정",
                 width=theme.BUTTON_WIDTH_SM,
                 command=lambda: self.show_cache_form(cache.category_id, cache),
             ),
@@ -108,12 +108,12 @@ class CacheManagerWindow(BaseWindow):
 
         ctk.CTkLabel(
             self.container,
-            text=f"Category: {category.name if category else cache.category_id}",
+            text=f"카테고리: {category.name if category else cache.category_id}",
             anchor="w",
         ).pack(fill="x", pady=(0, 4))
         ctk.CTkLabel(
             self.container,
-            text=f"Action: {ACTION_LABELS.get(cache.action_type, cache.action_type)}",
+            text=f"액션: {ACTION_LABELS.get(cache.action_type, cache.action_type)}",
             anchor="w",
         ).pack(fill="x", pady=(0, 8))
         content = ctk.CTkTextbox(self.container, wrap="word")
@@ -123,21 +123,21 @@ class CacheManagerWindow(BaseWindow):
 
     def show_cache_form(self, category_id: int, cache: KeywordCache | None = None) -> None:
         self.clear()
-        self.header("Edit cache" if cache else "Add cache", back_command=lambda: self.show_category_detail(category_id))
+        self.header("캐시 수정" if cache else "캐시 추가", back_command=lambda: self.show_category_detail(category_id))
 
-        ctk.CTkLabel(self.container, text="Keyword", anchor="w").pack(fill="x", pady=(8, 4))
-        keyword_entry = ctk.CTkEntry(self.container, placeholder_text="Example: dashboard")
+        ctk.CTkLabel(self.container, text="키워드", anchor="w").pack(fill="x", pady=(8, 4))
+        keyword_entry = ctk.CTkEntry(self.container, placeholder_text="예: 아카라이브")
         keyword_entry.pack(fill="x", pady=(0, 12))
         if cache:
             keyword_entry.insert(0, cache.keyword)
 
-        ctk.CTkLabel(self.container, text="Action type", anchor="w").pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(self.container, text="액션 종류", anchor="w").pack(fill="x", pady=(0, 4))
         current_action = ACTION_LABELS.get(cache.action_type, ACTION_LABELS["show_text"]) if cache else ACTION_LABELS["show_text"]
         action_menu = ctk.CTkOptionMenu(self.container, values=list(ACTION_VALUES.keys()))
         action_menu.set(current_action)
         action_menu.pack(fill="x", pady=(0, 12))
 
-        ctk.CTkLabel(self.container, text="Content", anchor="w").pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(self.container, text="내용", anchor="w").pack(fill="x", pady=(0, 4))
         content_box = ctk.CTkTextbox(self.container, wrap="word", height=220)
         content_box.pack(fill="both", expand=True, pady=(0, 12))
         if cache:
@@ -147,18 +147,18 @@ class CacheManagerWindow(BaseWindow):
         status_label.pack(fill="x", pady=(0, 8))
         widgets.primary_button(
             self.container,
-            "Save",
+            "저장",
             command=lambda: self._save_cache(category_id, cache, keyword_entry, action_menu, content_box, status_label),
         ).pack(anchor="e")
 
     def confirm_delete_cache(self, cache: KeywordCache) -> None:
-        dialog = BaseWindow(self, title="Delete cache", geometry="420x320")
+        dialog = BaseWindow(self, title="캐시 삭제 확인", geometry="420x320")
         dialog.grab_set()
-        widgets.title_label(dialog.container, "Delete this cache?").pack(fill="x", pady=(0, 8))
-        ctk.CTkLabel(dialog.container, text=f"Keyword: {cache.keyword}", anchor="w").pack(fill="x", pady=(0, 4))
+        widgets.title_label(dialog.container, "정말 삭제할까요?").pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(dialog.container, text=f"키워드: {cache.keyword}", anchor="w").pack(fill="x", pady=(0, 4))
         ctk.CTkLabel(
             dialog.container,
-            text=f"Action: {ACTION_LABELS.get(cache.action_type, cache.action_type)}",
+            text=f"액션: {ACTION_LABELS.get(cache.action_type, cache.action_type)}",
             anchor="w",
         ).pack(fill="x", pady=(0, 8))
         content = ctk.CTkTextbox(dialog.container, wrap="word", height=120)
@@ -167,8 +167,8 @@ class CacheManagerWindow(BaseWindow):
         content.configure(state="disabled")
         actions = ctk.CTkFrame(dialog.container, fg_color="transparent")
         actions.pack(fill="x")
-        widgets.primary_button(actions, "Cancel", command=dialog.destroy).pack(side="right")
-        widgets.danger_button(actions, "Delete", command=lambda: self._delete_cache_and_close(cache, dialog)).pack(
+        widgets.primary_button(actions, "취소", command=dialog.destroy).pack(side="right")
+        widgets.danger_button(actions, "삭제", command=lambda: self._delete_cache_and_close(cache, dialog)).pack(
             side="right", padx=(0, 8)
         )
 
@@ -181,7 +181,7 @@ class CacheManagerWindow(BaseWindow):
             f"{category.name}  |  {count}",
             command=lambda category_id=category.id: self.show_category_detail(category_id),
         ).pack(side="left", fill="x", expand=True, padx=(8, 8), pady=8)
-        widgets.primary_button(row, "Edit", width=64, command=lambda item=category: self.show_category_form(item)).pack(
+        widgets.primary_button(row, "수정", width=64, command=lambda item=category: self.show_category_form(item)).pack(
             side="left", padx=(0, 8), pady=8
         )
 
@@ -194,7 +194,7 @@ class CacheManagerWindow(BaseWindow):
         )
         widgets.primary_button(
             row,
-            "Edit",
+            "수정",
             width=64,
             command=lambda item=cache: self.show_cache_form(item.category_id, item),
         ).pack(side="left", padx=(0, 8), pady=8)
@@ -213,7 +213,7 @@ class CacheManagerWindow(BaseWindow):
     ) -> None:
         name = name_entry.get().strip()
         if not name:
-            status_label.configure(text="Enter a category name.")
+            status_label.configure(text="카테고리 이름을 입력해 주세요.")
             return
         save_keyword_cache_category(name, category_id=None if category is None else category.id)
         self.on_change()
@@ -231,7 +231,7 @@ class CacheManagerWindow(BaseWindow):
         keyword = keyword_entry.get().strip()
         content = content_box.get("1.0", "end").strip()
         if not keyword or not content:
-            status_label.configure(text="Enter both keyword and content.")
+            status_label.configure(text="키워드와 내용을 모두 입력해 주세요.")
             return
         save_keyword_cache(
             keyword,

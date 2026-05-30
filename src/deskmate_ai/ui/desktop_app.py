@@ -47,7 +47,7 @@ class DeskMateApp(ctk.CTk):
 
     def select_document(self) -> None:
         path = filedialog.askopenfilename(
-            title="Select document to summarize",
+            title="요약할 문서 선택",
             filetypes=[
                 ("Supported documents", "*.pdf *.txt *.md"),
                 ("PDF files", "*.pdf"),
@@ -114,7 +114,7 @@ class DeskMateApp(ctk.CTk):
     def _set_processing(self, processing: bool) -> None:
         self.is_processing = processing
         state = "disabled" if processing else "normal"
-        text = "Waiting" if processing else "Send"
+        text = "대기" if processing else "전송"
         self.prompt_entry.configure(state=state)
         self.submit_button.configure(state=state, text=text)
 

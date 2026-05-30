@@ -1,7 +1,7 @@
 ACTION_LABELS = {
-    "show_text": "Show text",
-    "open_url": "Open URL",
-    "translate": "Translate",
+    "show_text": "내용 보여주기",
+    "open_url": "사이트 열기",
+    "translate": "번역",
 }
 ACTION_VALUES = {label: value for value, label in ACTION_LABELS.items()}
-LANGUAGE_PAIRS = {"Japanese -> Korean": ("ja", "ko")}
+LANGUAGE_PAIRS = {"일본어 -> 한국어": ("ja", "ko")}

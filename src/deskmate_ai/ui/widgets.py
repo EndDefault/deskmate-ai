@@ -15,7 +15,7 @@ def primary_button(parent, text: str, command: Callable | None = None, **kwargs)
     return ctk.CTkButton(parent, text=text, command=command, **kwargs)
 
 
-def back_button(parent, command: Callable, *, text: str = "Back") -> ctk.CTkButton:
+def back_button(parent, command: Callable, *, text: str = "되돌아가기") -> ctk.CTkButton:
     return primary_button(parent, text=text, width=theme.BUTTON_WIDTH_MD, command=command)
 
 
