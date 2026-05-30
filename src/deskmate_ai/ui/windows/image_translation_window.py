@@ -107,10 +107,6 @@ class ImageTranslationWindow(BaseWindow):
         ctk.CTkButton(source_frame, text="폴더 선택", command=self.select_folder).pack(side="left", padx=(0, 8), pady=8)
         self.source_label = ctk.CTkLabel(source_frame, text="선택한 이미지: 0개", anchor="w")
         self.source_label.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=8)
-        self.cancel_button = ctk.CTkButton(source_frame, text="강제 종료", state="disabled", command=self.cancel_translation)
-        self.cancel_button.pack(side="right", padx=(0, 8), pady=8)
-        self.start_button = ctk.CTkButton(source_frame, text="시작", command=self.start_translation)
-        self.start_button.pack(side="right", padx=(0, 8), pady=8)
 
         settings = ctk.CTkFrame(self.container)
         settings.pack(fill="x", pady=(0, 12))
@@ -199,6 +195,13 @@ class ImageTranslationWindow(BaseWindow):
         self.progress.pack(fill="x", pady=(0, 8))
         self.status_label = ctk.CTkLabel(self.container, text="대기 중", anchor="w")
         self.status_label.pack(fill="x", pady=(0, 8))
+
+        actions = ctk.CTkFrame(self.container, fg_color="transparent")
+        actions.pack(side="bottom", fill="x")
+        self.cancel_button = ctk.CTkButton(actions, text="강제 종료", state="disabled", command=self.cancel_translation)
+        self.cancel_button.pack(side="right")
+        self.start_button = ctk.CTkButton(actions, text="시작", command=self.start_translation)
+        self.start_button.pack(side="right", padx=(0, 8))
 
         self.log = ctk.CTkTextbox(self.container, wrap="word", height=220)
         self.log.pack(fill="both", expand=True, pady=(0, 12))
