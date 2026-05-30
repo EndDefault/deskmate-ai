@@ -57,6 +57,11 @@ class ImageTranslationReviewWindow(BaseWindow):
         self.drag_rectangle = None
         self.header(title)
 
+        actions = ctk.CTkFrame(self.container, fg_color="transparent")
+        actions.pack(side="bottom", fill="x")
+        ctk.CTkButton(actions, text="불통과", fg_color="#b91c1c", command=self._reject).pack(side="left")
+        ctk.CTkButton(actions, text="통과", command=self._approve).pack(side="right")
+
         review_frame = ctk.CTkFrame(self.container)
         review_frame.pack(fill="both", expand=True, pady=(0, 12))
         review_frame.grid_columnconfigure(0, weight=3)
@@ -107,11 +112,6 @@ class ImageTranslationReviewWindow(BaseWindow):
             self.preview_canvas.bind("<ButtonPress-1>", self._start_drag)
             self.preview_canvas.bind("<B1-Motion>", self._drag)
             self.preview_canvas.bind("<ButtonRelease-1>", self._finish_drag)
-
-        actions = ctk.CTkFrame(self.container, fg_color="transparent")
-        actions.pack(fill="x")
-        ctk.CTkButton(actions, text="불통과", fg_color="#b91c1c", command=self._reject).pack(side="left")
-        ctk.CTkButton(actions, text="통과", command=self._approve).pack(side="right")
 
     def _show_preview_image(self, image_path: Path) -> None:
         image = Image.open(image_path)
